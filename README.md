@@ -165,6 +165,35 @@ Platform notes:
 - WhatsApp uses the Node bridge runtime in the host-local cache while keeping its pairing session on the USB stick.
 - Signal uses the upstream Hermes Signal adapter, but `signal-cli` and Java are external host prerequisites; the USB stick stores only Hermes config/state.
 
+## Telegram setup
+
+Telegram is the easiest non-WhatsApp bridge to add because it only needs a bot token and your numeric Telegram user ID.
+
+1. In Telegram, message `@BotFather`, run `/newbot`, and copy the bot token.
+2. Find your numeric user ID with `@userinfobot` or `@get_id_bot`. Use the number, not your `@username`.
+3. Run the portable setup helper:
+
+   ```bash
+   ./hermes-portable --setup-platform telegram
+   ```
+
+4. When the wizard asks for credentials, store them in the portable Hermes environment. The equivalent manual entries in `data/.env` look like this:
+
+   ```env
+   TELEGRAM_BOT_TOKEN=<bot-token-from-botfather>
+   TELEGRAM_ALLOWED_USERS=<numeric-telegram-user-id>
+   ```
+
+   A template is available at `examples/env/telegram.env`.
+
+5. Start the gateway and send a message to your bot:
+
+   ```bash
+   ./hermes-portable --gateway-only
+   ```
+
+For group chats, disable BotFather privacy mode or promote the bot to admin if you want it to see ordinary messages. Keep `TELEGRAM_ALLOWED_USERS` tight; do not enable open access on a bot that can run tools.
+
 ## WhatsApp setup
 
 Pair WhatsApp from the same portable environment:
