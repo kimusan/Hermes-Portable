@@ -225,6 +225,45 @@ Discord is useful for DMs, private servers, and shared team channels. The most i
 
 By default Hermes responds to every DM, but in server channels it expects an `@mention` unless you configure free-response channels.
 
+## Slack setup
+
+Slack uses Socket Mode, so Hermes Portable does not need a public webhook URL. You need two Slack tokens: a bot token (`xoxb-...`) and an app-level Socket Mode token (`xapp-...`).
+
+1. Generate the upstream Hermes Slack app manifest from the portable environment:
+
+   ```bash
+   ./hermes-portable -- hermes slack manifest --write
+   ```
+
+   The file is written under the portable Hermes home, not your global home directory.
+
+2. In Slack, go to `api.slack.com/apps`, create an app from an app manifest, paste the generated manifest, and install it to your workspace.
+3. Confirm Socket Mode is enabled and copy the app-level token (`xapp-...`) plus the bot token (`xoxb-...`).
+4. Find your Slack Member ID from your profile menu (`View full profile` -> more menu -> `Copy member ID`).
+5. Run the portable setup helper:
+
+   ```bash
+   ./hermes-portable --setup-platform slack
+   ```
+
+6. The equivalent manual entries in `data/.env` look like this:
+
+   ```env
+   SLACK_BOT_TOKEN=<xoxb-bot-token>
+   SLACK_APP_TOKEN=<xapp-app-token>
+   SLACK_ALLOWED_USERS=<slack-member-id>
+   ```
+
+   A template is available at `examples/env/slack.env`.
+
+7. Start the gateway, invite the bot to any channel where it should respond, and test a DM or app mention:
+
+   ```bash
+   ./hermes-portable --gateway-only
+   ```
+
+If Slack works in DMs but not channels, check that the app has `message.channels` / `message.groups` event subscriptions and that the bot has been invited to the channel.
+
 ## WhatsApp setup
 
 Pair WhatsApp from the same portable environment:
