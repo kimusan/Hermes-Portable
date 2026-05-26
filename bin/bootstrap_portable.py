@@ -142,8 +142,27 @@ def _filtered_inherited_path(env: dict[str, str]) -> str:
     return os.pathsep.join(parts)
 
 
+def _read_env_file() -> dict[str, str]:
+    """Read simple KEY=VALUE entries from the portable data/.env file."""
+    env_path = DATA / ".env"
+    values: dict[str, str] = {}
+    if not env_path.exists():
+        return values
+    for raw_line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            values[key] = value
+    return values
+
+
 def portable_env() -> dict[str, str]:
     env = os.environ.copy()
+    env.update(_read_env_file())
     env.update({
         "HERMES_PORTABLE": "1",
         "HERMES_PORTABLE_ROOT": str(ROOT),
@@ -340,9 +359,13 @@ def save_state(extra: dict):
     STATE.write_text(json.dumps(extra, indent=2) + "\n", encoding="utf-8")
 
 
-def _env_has(name: str, env: dict[str, str] | None = None) -> bool:
+def _env_value(name: str, env: dict[str, str] | None = None) -> str:
     source = env if env is not None else portable_env()
-    return bool(source.get(name, "").strip())
+    return source.get(name, "").strip()
+
+
+def _env_has(name: str, env: dict[str, str] | None = None) -> bool:
+    return bool(_env_value(name, env))
 
 
 def print_platform_setup_notes(platform_name: str):
@@ -372,8 +395,14 @@ def print_platform_setup_notes(platform_name: str):
         print("Slack:")
         print("  1. Generate a manifest with:")
         print("       ./hermes-portable -- hermes slack manifest --write")
-        print("  2. Create a Slack app from that manifest and enable Socket Mode.")
-        print("  3. Configure SLACK_BOT_TOKEN, SLACK_APP_TOKEN, and SLACK_ALLOWED_USERS.")
+        print("  2. Create a Slack app from that manifest, install it to your workspace, and enable Socket Mode.")
+        print("  3. Copy SLACK_BOT_TOKEN from OAuth & Permissions -> Bot User OAuth Token.")
+        print("     It must start with xoxb-. Do NOT use the Verification Token or Signing Secret.")
+        print("  4. Copy SLACK_APP_TOKEN from Basic Information -> App-Level Tokens.")
+        print("     It must start with xapp- and include the connections:write scope.")
+        print("  5. Set SLACK_ALLOWED_USERS to your Slack member ID (profile -> More -> Copy member ID).")
+        print("     Without SLACK_ALLOWED_USERS, SLACK_ALLOW_ALL_USERS=true, or GATEWAY_ALLOW_ALL_USERS=true,")
+        print("     Slack users are authenticated but denied by Hermes authorization.")
         print()
     if platform_name in {"signal", "all"}:
         print("Signal:")
@@ -462,10 +491,22 @@ def doctor(env):
     print(f"  whatsapp bridge:      {WHATSAPP_RUNTIME / 'bridge.js'} exists={(WHATSAPP_RUNTIME / 'bridge.js').exists()}")
     print(f"  whatsapp session:     {DATA / 'platforms' / 'whatsapp' / 'session'}")
     print(f"  whatsapp creds:       {(DATA / 'platforms' / 'whatsapp' / 'session' / 'creds.json').exists()}")
+    slack_bot_token = _env_value("SLACK_BOT_TOKEN", env)
+    slack_app_token = _env_value("SLACK_APP_TOKEN", env)
+    slack_has_allowlist = any(
+        _env_has(name, env)
+        for name in ("SLACK_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS")
+    ) or any(
+        _env_value(name, env).lower() in {"true", "1", "yes"}
+        for name in ("SLACK_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS")
+    )
     platform_checks = {
         "telegram configured": _env_has("TELEGRAM_BOT_TOKEN", env),
         "discord configured": _env_has("DISCORD_BOT_TOKEN", env),
-        "slack configured": _env_has("SLACK_BOT_TOKEN", env) and _env_has("SLACK_APP_TOKEN", env),
+        "slack tokens present": bool(slack_bot_token and slack_app_token),
+        "slack bot token starts xoxb-": slack_bot_token.startswith("xoxb-"),
+        "slack app token starts xapp-": slack_app_token.startswith("xapp-"),
+        "slack allowed users/open access": slack_has_allowlist,
         "signal configured": _env_has("SIGNAL_HTTP_URL", env) and _env_has("SIGNAL_ACCOUNT", env),
     }
     for label, ok in platform_checks.items():

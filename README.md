@@ -227,7 +227,12 @@ By default Hermes responds to every DM, but in server channels it expects an `@m
 
 ## Slack setup
 
-Slack uses Socket Mode, so Hermes Portable does not need a public webhook URL. You need two Slack tokens: a bot token (`xoxb-...`) and an app-level Socket Mode token (`xapp-...`).
+Slack uses Socket Mode, so Hermes Portable does not need a public webhook URL. You need two different Slack tokens, and they come from different places:
+
+- `SLACK_BOT_TOKEN`: the Bot User OAuth Token. It starts with `xoxb-`.
+- `SLACK_APP_TOKEN`: the app-level Socket Mode token. It starts with `xapp-`.
+
+Do not use the Slack Verification Token or Signing Secret as `SLACK_BOT_TOKEN`; those are different values and Slack will return `invalid_auth`.
 
 1. Generate the upstream Hermes Slack app manifest from the portable environment:
 
@@ -238,25 +243,43 @@ Slack uses Socket Mode, so Hermes Portable does not need a public webhook URL. Y
    The file is written under the portable Hermes home, not your global home directory.
 
 2. In Slack, go to `api.slack.com/apps`, create an app from an app manifest, paste the generated manifest, and install it to your workspace.
-3. Confirm Socket Mode is enabled and copy the app-level token (`xapp-...`) plus the bot token (`xoxb-...`).
-4. Find your Slack Member ID from your profile menu (`View full profile` -> more menu -> `Copy member ID`).
-5. Run the portable setup helper:
+3. Copy the bot token:
+   - Open your app in `api.slack.com/apps`.
+   - Go to `OAuth & Permissions`.
+   - Copy `Bot User OAuth Token`.
+   - It must start with `xoxb-`.
+4. Copy the app-level Socket Mode token:
+   - Go to `Basic Information` -> `App-Level Tokens`.
+   - Create/copy a token with `connections:write`.
+   - It must start with `xapp-`.
+5. Find your Slack Member ID from your profile menu (`View full profile` -> more menu -> `Copy member ID`). It usually starts with `U` or `W`.
+6. Run the portable setup helper:
 
    ```bash
    ./hermes-portable --setup-platform slack
    ```
 
-6. The equivalent manual entries in `data/.env` look like this:
+7. The equivalent manual entries in `data/.env` look like this:
 
    ```env
-   SLACK_BOT_TOKEN=<xoxb-bot-token>
-   SLACK_APP_TOKEN=<xapp-app-token>
-   SLACK_ALLOWED_USERS=<slack-member-id>
+   SLACK_BOT_TOKEN=xoxb-...
+   SLACK_APP_TOKEN=xapp-...
+   SLACK_ALLOWED_USERS=U0123456789
    ```
+
+   `SLACK_ALLOWED_USERS` is required for normal private access. If it is empty, Hermes will deny Slack users even though the Slack app is connected. Only skip it if you intentionally set `SLACK_ALLOW_ALL_USERS=true` or `GATEWAY_ALLOW_ALL_USERS=true`.
 
    A template is available at `examples/env/slack.env`.
 
-7. Start the gateway, invite the bot to any channel where it should respond, and test a DM or app mention:
+8. Check the portable configuration:
+
+   ```bash
+   ./hermes-portable --doctor
+   ```
+
+   The Slack checks should show a valid `xoxb-` bot token, a valid `xapp-` app token, and configured allowed users/open access.
+
+9. Start the gateway, invite the bot to any channel where it should respond, and test a DM or app mention:
 
    ```bash
    ./hermes-portable --gateway-only
