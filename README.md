@@ -194,6 +194,37 @@ Telegram is the easiest non-WhatsApp bridge to add because it only needs a bot t
 
 For group chats, disable BotFather privacy mode or promote the bot to admin if you want it to see ordinary messages. Keep `TELEGRAM_ALLOWED_USERS` tight; do not enable open access on a bot that can run tools.
 
+## Discord setup
+
+Discord is useful for DMs, private servers, and shared team channels. The most important setup step is enabling Discord's privileged intents.
+
+1. Go to the Discord Developer Portal and create an application with a bot user.
+2. In the bot settings, enable both **Server Members Intent** and **Message Content Intent**. Without Message Content Intent the bot can appear online but receive empty messages.
+3. Reset/copy the bot token, then invite the bot to your server with at least View Channels, Send Messages, Read Message History, Attach Files, and Embed Links permissions.
+4. Enable Developer Mode in Discord and copy your numeric Discord User ID.
+5. Run the portable setup helper:
+
+   ```bash
+   ./hermes-portable --setup-platform discord
+   ```
+
+6. The equivalent manual entries in `data/.env` look like this:
+
+   ```env
+   DISCORD_BOT_TOKEN=<discord-bot-token>
+   DISCORD_ALLOWED_USERS=<discord-user-id>
+   ```
+
+   A template is available at `examples/env/discord.env`.
+
+7. Start the gateway and test a DM or mention the bot in a server channel:
+
+   ```bash
+   ./hermes-portable --gateway-only
+   ```
+
+By default Hermes responds to every DM, but in server channels it expects an `@mention` unless you configure free-response channels.
+
 ## WhatsApp setup
 
 Pair WhatsApp from the same portable environment:
