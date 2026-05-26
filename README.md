@@ -264,6 +264,55 @@ Slack uses Socket Mode, so Hermes Portable does not need a public webhook URL. Y
 
 If Slack works in DMs but not channels, check that the app has `message.channels` / `message.groups` event subscriptions and that the bot has been invited to the channel.
 
+## Signal setup
+
+Signal support uses the upstream Hermes Signal adapter plus a host-installed `signal-cli` daemon. Hermes Portable stores the Hermes config on the USB stick, but it does not bundle Java or signal-cli.
+
+1. Install Java 17+ and `signal-cli` on the host machine.
+2. Link signal-cli as a secondary device:
+
+   ```bash
+   signal-cli link -n "HermesPortable"
+   ```
+
+   Then open Signal on your phone and use `Settings -> Linked Devices -> Link New Device`.
+
+3. Start the Signal HTTP daemon on the host, replacing the account with your E.164 phone number:
+
+   ```bash
+   signal-cli --account +1234567890 daemon --http 127.0.0.1:8080
+   ```
+
+4. Run the portable setup helper:
+
+   ```bash
+   ./hermes-portable --setup-platform signal
+   ```
+
+5. The equivalent manual entries in `data/.env` look like this:
+
+   ```env
+   SIGNAL_HTTP_URL=http://127.0.0.1:8080
+   SIGNAL_ACCOUNT=<your-e164-signal-number>
+   SIGNAL_ALLOWED_USERS=<allowed-e164-number-or-signal-uuid>
+   ```
+
+   A template is available at `examples/env/signal.env`.
+
+6. Check that the portable launcher can see signal-cli and the daemon:
+
+   ```bash
+   ./hermes-portable --doctor
+   ```
+
+7. Start the gateway and test Signal. For a single-number setup, send a message to Signal's "Note to Self" conversation from your phone:
+
+   ```bash
+   ./hermes-portable --gateway-only
+   ```
+
+If `--doctor` says the Signal daemon is not reachable, start the `signal-cli ... daemon --http ...` command first and make sure `SIGNAL_HTTP_URL` points to the same host/port.
+
 ## WhatsApp setup
 
 Pair WhatsApp from the same portable environment:

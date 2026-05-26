@@ -436,6 +436,17 @@ def stop_process_tree(proc: subprocess.Popen | None):
             pass
 
 
+def _signal_daemon_status(env: dict[str, str]) -> str:
+    url = env.get("SIGNAL_HTTP_URL", "").strip().rstrip("/")
+    if not url:
+        return "not configured"
+    try:
+        with urllib.request.urlopen(f"{url}/api/v1/check", timeout=2) as response:
+            return f"reachable HTTP {response.status}"
+    except Exception as exc:
+        return f"not reachable ({exc.__class__.__name__})"
+
+
 def doctor(env):
     print_header()
     print("Checks:")
@@ -461,6 +472,7 @@ def doctor(env):
         print(f"  {label + ':':22} {ok}")
     signal_cli = shutil.which("signal-cli", path=filtered_path)
     print(f"  signal-cli:           {signal_cli or 'not found'}")
+    print(f"  signal daemon:        {_signal_daemon_status(env)}")
     if venv_bin("hermes").exists():
         cp = capture(hermes_cmd(["config", "env-path"], env=env), env=env, cwd=SRC)
         print(f"  hermes env-path:      {cp.stdout.strip() or cp.stderr.strip()}")
