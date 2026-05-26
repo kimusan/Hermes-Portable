@@ -7,11 +7,12 @@ State on USB:
 - data/config.yaml
 - data/state.db and sessions
 - data/skills, memories, auth, plugins, cron
-- data/platforms/whatsapp/session
+- data/platforms/ with platform-specific portable state, including data/platforms/whatsapp/session
 
 Host-local cache:
 - Python venv
 - pip cache
+- Python messaging SDKs for Telegram, Discord, and Slack
 - Node runtime if the host does not have Node 18+
 - npm cache
 - WhatsApp bridge node_modules
@@ -32,6 +33,10 @@ Useful commands:
 
     ./hermes-portable --doctor
     ./hermes-portable --repair --doctor
+    ./hermes-portable --setup-platform telegram
+    ./hermes-portable --setup-platform discord
+    ./hermes-portable --setup-platform slack
+    ./hermes-portable --setup-platform signal
     ./hermes-portable --pair-whatsapp
     ./hermes-portable --no-gateway
     ./hermes-portable --gateway-only
@@ -43,6 +48,12 @@ Gateway behavior:
 - When launched without Hermes arguments, it starts `hermes gateway run` as a child process, then starts the Hermes CLI.
 - When the CLI exits, the launcher terminates the gateway child process.
 - If you pass explicit Hermes arguments, the launcher runs that command and does not autostart the gateway unless you use --gateway-only.
+- Use `--setup-platform telegram|discord|slack|signal|whatsapp|all` to run the upstream gateway setup wizard with portable `HERMES_HOME` and platform-specific setup notes.
+
+Messaging behavior:
+- Telegram, Discord, and Slack use upstream Hermes Python adapters and SDKs installed in the host-local venv through the `messaging` extra.
+- Signal uses upstream Hermes plus an external host `signal-cli` daemon; Java and signal-cli are not bundled on the USB stick.
+- WhatsApp remains the only Node bridge runtime prepared by this launcher.
 
 WhatsApp behavior:
 - The WhatsApp session stays on USB at data/platforms/whatsapp/session.

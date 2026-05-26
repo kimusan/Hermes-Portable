@@ -59,12 +59,13 @@ It keeps durable state on the USB drive:
 - `data/skills/`
 - `data/memories/`
 - `data/auth.json`
-- `data/platforms/whatsapp/session/`
+- platform sessions and credentials under `data/platforms/`, including `data/platforms/whatsapp/session/`
 
 It keeps rebuildable runtime pieces in a host-local cache:
 
 - Python virtualenv
 - pip cache
+- Python messaging SDKs for Telegram, Discord, and Slack
 - Node runtime, when needed
 - npm cache
 - WhatsApp bridge runtime and `node_modules`
@@ -106,10 +107,11 @@ From this folder:
 That will:
 
 1. prepare/check the host-local runtime cache,
-2. prepare the WhatsApp bridge runtime outside the USB filesystem,
-3. start `hermes gateway run` as a child process,
-4. start the Hermes CLI,
-5. stop the gateway child when the CLI exits.
+2. install Hermes with the mainstream messaging gateway SDKs,
+3. prepare the WhatsApp bridge runtime outside the USB filesystem,
+4. start `hermes gateway run` as a child process,
+5. start the Hermes CLI,
+6. stop the gateway child when the CLI exits.
 
 ## First-run setup
 
@@ -136,6 +138,32 @@ It should point inside this project:
 ```text
 .../Hermes-USB-Portable2/data/.env
 ```
+
+## Gateway platform setup
+
+Hermes Portable can run several gateway adapters from the same USB state directory. Use the portable setup helper so the wizard reads and writes `data/.env` and `data/config.yaml`, not a global `~/.hermes` install:
+
+```bash
+./hermes-portable --setup-platform telegram
+./hermes-portable --setup-platform discord
+./hermes-portable --setup-platform slack
+./hermes-portable --setup-platform signal
+./hermes-portable --setup-platform whatsapp
+./hermes-portable --setup-platform all
+```
+
+The helper prints platform-specific prerequisites and then starts upstream `hermes gateway setup`. The gateway setup wizard may offer to install a system service; for portable use, prefer this launcher's child-process modes instead:
+
+```bash
+./hermes-portable              # gateway child + CLI
+./hermes-portable --gateway-only
+```
+
+Platform notes:
+
+- Telegram, Discord, and Slack use Python gateway SDKs installed into the host-local portable virtualenv.
+- WhatsApp uses the Node bridge runtime in the host-local cache while keeping its pairing session on the USB stick.
+- Signal uses the upstream Hermes Signal adapter, but `signal-cli` and Java are external host prerequisites; the USB stick stores only Hermes config/state.
 
 ## WhatsApp setup
 
@@ -183,6 +211,12 @@ WHATSAPP_ALLOWED_USERS=12345678
 # Rebuild the host-local Python/Node/WhatsApp runtime where needed
 ./hermes-portable --repair --doctor
 
+# Configure a messenger platform with portable HERMES_HOME
+./hermes-portable --setup-platform telegram
+./hermes-portable --setup-platform discord
+./hermes-portable --setup-platform slack
+./hermes-portable --setup-platform signal
+
 # Pair WhatsApp interactively
 ./hermes-portable --pair-whatsapp
 
@@ -219,7 +253,7 @@ Hermes-USB-Portable2/
 │   ├── config.yaml              # Hermes config
 │   ├── state.db                 # session database
 │   ├── logs/                    # agent/gateway logs
-│   └── platforms/whatsapp/      # WhatsApp bridge logs + session
+│   └── platforms/               # portable messenger state, such as WhatsApp sessions
 ├── portable/                    # generated runtime metadata, ignored by git
 └── src/hermes-agent/            # upstream Hermes source checkout
 ```

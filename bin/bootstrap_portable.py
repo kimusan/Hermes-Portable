@@ -34,6 +34,7 @@ NODE_VERSION = "20.19.5"
 MIN_NODE_MAJOR = 18
 MIN_PYTHON = (3, 11)
 RELEASE_VERSION = "0.1.0"
+SETUP_PLATFORMS = ("telegram", "discord", "slack", "signal", "whatsapp", "all")
 
 
 def _real_home() -> Path:
@@ -209,8 +210,10 @@ def ensure_venv(force=False):
     if force or not venv_bin("hermes").exists() or installed_marker != source_marker:
         print("→ Installing Hermes into host-local venv from USB source")
         run([str(py), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"], env=portable_env())
-        # Avoid installing huge optional extras here; Hermes can still be reinstalled manually with extras if needed.
-        run([str(py), "-m", "pip", "install", "-e", str(SRC), "python-telegram-bot[webhooks]==22.6"], env=portable_env())
+        # Install Hermes plus the mainstream gateway SDKs. Signal does not
+        # need an extra Python package, but its adapter is included in Hermes
+        # and talks to an external signal-cli HTTP daemon when configured.
+        run([str(py), "-m", "pip", "install", "-e", f"{SRC}[messaging]"], env=portable_env())
         marker.write_text(source_marker, encoding="utf-8")
 
 
@@ -337,6 +340,66 @@ def save_state(extra: dict):
     STATE.write_text(json.dumps(extra, indent=2) + "\n", encoding="utf-8")
 
 
+def _env_has(name: str, env: dict[str, str] | None = None) -> bool:
+    source = env if env is not None else portable_env()
+    return bool(source.get(name, "").strip())
+
+
+def print_platform_setup_notes(platform_name: str):
+    platform_name = platform_name.lower()
+    print()
+    print("Portable gateway setup")
+    print("  Durable config/secrets go here:")
+    print(f"    {DATA / '.env'}")
+    print(f"    {DATA / 'config.yaml'}")
+    print("  Runtime packages stay in the host-local cache:")
+    print(f"    {RUNTIME}")
+    print()
+
+    if platform_name in {"telegram", "all"}:
+        print("Telegram:")
+        print("  1. Create a bot with @BotFather and copy the bot token.")
+        print("  2. Find your numeric user ID, for example with @userinfobot.")
+        print("  3. Configure TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS.")
+        print()
+    if platform_name in {"discord", "all"}:
+        print("Discord:")
+        print("  1. Create an app/bot in the Discord Developer Portal.")
+        print("  2. Enable Server Members Intent and Message Content Intent.")
+        print("  3. Configure DISCORD_BOT_TOKEN and DISCORD_ALLOWED_USERS.")
+        print()
+    if platform_name in {"slack", "all"}:
+        print("Slack:")
+        print("  1. Generate a manifest with:")
+        print("       ./hermes-portable -- hermes slack manifest --write")
+        print("  2. Create a Slack app from that manifest and enable Socket Mode.")
+        print("  3. Configure SLACK_BOT_TOKEN, SLACK_APP_TOKEN, and SLACK_ALLOWED_USERS.")
+        print()
+    if platform_name in {"signal", "all"}:
+        print("Signal:")
+        print("  1. Install Java 17+ and signal-cli on the host machine.")
+        print("  2. Link signal-cli as a secondary Signal device.")
+        print("  3. Run signal-cli daemon --http 127.0.0.1:8080.")
+        print("  4. Configure SIGNAL_HTTP_URL, SIGNAL_ACCOUNT, and SIGNAL_ALLOWED_USERS.")
+        print()
+    if platform_name in {"whatsapp", "all"}:
+        print("WhatsApp:")
+        print("  1. Run ./hermes-portable --pair-whatsapp and scan the QR code.")
+        print("  2. Configure WHATSAPP_ENABLED, WHATSAPP_MODE, and WHATSAPP_ALLOWED_USERS.")
+        print()
+
+
+def setup_platform(platform_name: str) -> int:
+    platform_name = platform_name.lower()
+    print_platform_setup_notes(platform_name)
+    if platform_name == "slack":
+        print("→ Writing Slack app manifest in the portable Hermes home")
+        subprocess.call(hermes_cmd(["slack", "manifest", "--write"], env=portable_env()), cwd=SRC, env=portable_env())
+    print("→ Starting upstream Hermes gateway setup wizard")
+    print("  Select the platform(s) you want to configure, then restart the portable gateway.")
+    return subprocess.call(hermes_cmd(["gateway", "setup"], env=portable_env()), cwd=SRC, env=portable_env())
+
+
 def start_gateway(env) -> subprocess.Popen | None:
     print("→ Starting gateway as child process (portable mode; no service install)")
     log = DATA / "logs" / "gateway-portable-child.log"
@@ -388,6 +451,16 @@ def doctor(env):
     print(f"  whatsapp bridge:      {WHATSAPP_RUNTIME / 'bridge.js'} exists={(WHATSAPP_RUNTIME / 'bridge.js').exists()}")
     print(f"  whatsapp session:     {DATA / 'platforms' / 'whatsapp' / 'session'}")
     print(f"  whatsapp creds:       {(DATA / 'platforms' / 'whatsapp' / 'session' / 'creds.json').exists()}")
+    platform_checks = {
+        "telegram configured": _env_has("TELEGRAM_BOT_TOKEN", env),
+        "discord configured": _env_has("DISCORD_BOT_TOKEN", env),
+        "slack configured": _env_has("SLACK_BOT_TOKEN", env) and _env_has("SLACK_APP_TOKEN", env),
+        "signal configured": _env_has("SIGNAL_HTTP_URL", env) and _env_has("SIGNAL_ACCOUNT", env),
+    }
+    for label, ok in platform_checks.items():
+        print(f"  {label + ':':22} {ok}")
+    signal_cli = shutil.which("signal-cli", path=filtered_path)
+    print(f"  signal-cli:           {signal_cli or 'not found'}")
     if venv_bin("hermes").exists():
         cp = capture(hermes_cmd(["config", "env-path"], env=env), env=env, cwd=SRC)
         print(f"  hermes env-path:      {cp.stdout.strip() or cp.stderr.strip()}")
@@ -404,6 +477,8 @@ def command_run(args):
     if args.doctor:
         doctor(portable_env())
         return 0
+    if args.setup_platform:
+        return setup_platform(args.setup_platform)
     if args.pair_whatsapp:
         return subprocess.call(hermes_cmd(["whatsapp"], env=portable_env()), cwd=SRC, env=portable_env())
     gateway = None
@@ -436,6 +511,7 @@ def main(argv=None):
     parser.add_argument("--repair", action="store_true", help="rebuild venv and WhatsApp bridge runtime")
     parser.add_argument("--repair-node", action="store_true", help="redownload host-local Node runtime")
     parser.add_argument("--reset-runtime", action="store_true", help="delete host-local runtime cache and exit")
+    parser.add_argument("--setup-platform", choices=SETUP_PLATFORMS, help="show portable setup notes, then run Hermes gateway setup for a messenger platform")
     parser.add_argument("--pair-whatsapp", action="store_true", help="prepare runtime and run Hermes WhatsApp pairing")
     parser.add_argument("--skip-whatsapp-prepare", action="store_true", help="skip npm install/copy of WhatsApp bridge")
     parser.add_argument("hermes_args", nargs=argparse.REMAINDER, help="arguments passed to hermes; prefix with -- before Hermes args if needed")
