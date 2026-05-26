@@ -1,0 +1,452 @@
+#!/usr/bin/env python3
+"""Hermes USB portable launcher/bootstrapper.
+
+Design goals:
+- keep durable Hermes state on the USB drive (data/)
+- keep rebuildable runtimes on the host cache (venv, node, node_modules, npm cache)
+- optionally run the gateway only as a child of the portable launcher
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import shutil
+import signal
+import subprocess
+import sys
+import tarfile
+import time
+import urllib.request
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src" / "hermes-agent"
+DATA = ROOT / "data"
+PORTABLE = ROOT / "portable"
+MANIFEST = PORTABLE / "manifest.json"
+STATE = PORTABLE / "runtime-state.json"
+
+NODE_VERSION = "20.19.5"
+MIN_NODE_MAJOR = 18
+MIN_PYTHON = (3, 11)
+RELEASE_VERSION = "0.1.0"
+
+
+def _real_home() -> Path:
+    """Return the OS account home, ignoring portable launchers that override HOME."""
+    if platform.system().lower() == "windows":
+        return Path.home()
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        return Path.home()
+
+
+def host_cache_base() -> Path:
+    system = platform.system().lower()
+    real_home = _real_home()
+    if system == "windows":
+        return Path(os.environ.get("LOCALAPPDATA", real_home / "AppData" / "Local")) / "HermesPortable"
+    if system == "darwin":
+        return real_home / "Library" / "Caches" / "HermesPortable"
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    if xdg and not str(xdg).startswith(str(ROOT)):
+        return Path(xdg) / "hermes-portable"
+    return real_home / ".cache" / "hermes-portable"
+
+
+def stable_usb_id() -> str:
+    PORTABLE.mkdir(parents=True, exist_ok=True)
+    if MANIFEST.exists():
+        try:
+            data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+            if data.get("usb_id"):
+                return str(data["usb_id"])
+        except Exception:
+            pass
+    seed = f"{ROOT.resolve()}|{SRC.exists()}|hermes-portable-v2".encode("utf-8", "ignore")
+    usb_id = hashlib.sha256(seed).hexdigest()[:16]
+    data = {
+        "portable_version": 1,
+        "release_version": RELEASE_VERSION,
+        "usb_id": usb_id,
+        "hermes_home": "data",
+        "source_dir": "src/hermes-agent",
+        "gateway_autostart": True,
+        "runtime_policy": "host-cache",
+        "whatsapp_bridge": {
+            "session_dir": "data/platforms/whatsapp/session",
+            "runtime_dir": "whatsapp-bridge"
+        }
+    }
+    MANIFEST.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return usb_id
+
+
+USB_ID = stable_usb_id()
+RUNTIME = host_cache_base() / USB_ID
+VENV = RUNTIME / "venv"
+NODE_HOME = RUNTIME / "node"
+WHATSAPP_RUNTIME = RUNTIME / "whatsapp-bridge"
+TMP = RUNTIME / "tmp"
+
+
+def is_windows() -> bool:
+    return platform.system().lower() == "windows"
+
+
+def exe(name: str) -> str:
+    return name + (".exe" if is_windows() else "")
+
+
+def venv_python() -> Path:
+    return VENV / ("Scripts/python.exe" if is_windows() else "bin/python")
+
+
+def venv_bin(name: str) -> Path:
+    return VENV / (f"Scripts/{name}.exe" if is_windows() else f"bin/{name}")
+
+
+def run(cmd, *, cwd=None, env=None, check=True, quiet=False, timeout=None):
+    if not quiet:
+        print("→", " ".join(map(str, cmd)))
+    kwargs = {}
+    if quiet:
+        kwargs.update({"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
+    return subprocess.run(cmd, cwd=cwd, env=env, check=check, text=True, timeout=timeout, **kwargs)
+
+
+def capture(cmd, *, env=None, cwd=None):
+    return subprocess.run(cmd, env=env, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _filtered_inherited_path(env: dict[str, str]) -> str:
+    """Drop paths from other Hermes portable sticks from inherited PATH."""
+    parts = []
+    root_s = str(ROOT)
+    for part in env.get("PATH", "").split(os.pathsep):
+        if not part:
+            continue
+        # Avoid accidentally depending on a different portable install that was
+        # used to launch this session. Host system paths are fine; other USB
+        # Hermes runtime paths are not.
+        if "Hermes-USB-Portable" in part and not part.startswith(root_s):
+            continue
+        parts.append(part)
+    return os.pathsep.join(parts)
+
+
+def portable_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.update({
+        "HERMES_PORTABLE": "1",
+        "HERMES_PORTABLE_ROOT": str(ROOT),
+        "HERMES_HOME": str(DATA),
+        "HERMES_RUNTIME_CACHE": str(RUNTIME),
+        "HERMES_PORTABLE_WHATSAPP_BRIDGE_DIR": str(WHATSAPP_RUNTIME),
+        "HERMES_PORTABLE_WHATSAPP_SESSION": str(DATA / "platforms" / "whatsapp" / "session"),
+        "TERMINAL_CWD": str(SRC),
+        "PIP_CACHE_DIR": str(RUNTIME / "pip-cache"),
+        "NPM_CONFIG_CACHE": str(RUNTIME / "npm-cache"),
+        "NPM_CONFIG_INSTALL_LINKS": "true",
+        "WHATSAPP_NPM_INSTALL_TIMEOUT": env.get("WHATSAPP_NPM_INSTALL_TIMEOUT", "600"),
+        "PYTHONNOUSERSITE": "1",
+    })
+    path_parts = []
+    if venv_python().exists():
+        path_parts.append(str(venv_python().parent))
+    if NODE_HOME.exists():
+        path_parts.append(str(NODE_HOME if is_windows() else NODE_HOME / "bin"))
+    path_parts.append(_filtered_inherited_path(env))
+    env["PATH"] = os.pathsep.join([p for p in path_parts if p])
+    if not is_windows():
+        # Keep HOME stable but on the host cache so tools with Unix metadata expectations work.
+        env["HOME"] = str(RUNTIME / "home")
+    env["TMPDIR"] = str(TMP)
+    return env
+
+
+def print_header():
+    print(f"Hermes Portable v{RELEASE_VERSION}")
+    print(f"  root:          {ROOT}")
+    print(f"  HERMES_HOME:   {DATA}")
+    print(f"  env file:      {DATA / '.env'}")
+    print(f"  runtime cache: {RUNTIME}")
+    print(f"  usb id:        {USB_ID}")
+
+
+def ensure_dirs():
+    for p in [DATA, PORTABLE, RUNTIME, TMP, RUNTIME / "home", RUNTIME / "pip-cache", RUNTIME / "npm-cache", DATA / "logs", DATA / "platforms" / "whatsapp" / "session"]:
+        p.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_python_compatible():
+    if sys.version_info < MIN_PYTHON:
+        raise SystemExit(f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ is required to bootstrap Hermes; current is {platform.python_version()}.")
+
+
+def ensure_venv(force=False):
+    ensure_python_compatible()
+    py = venv_python()
+    if force and VENV.exists():
+        shutil.rmtree(VENV, ignore_errors=True)
+    if not py.exists():
+        print("→ Creating host-local Python venv")
+        run([sys.executable, "-m", "venv", str(VENV)])
+    # Make sure pip exists. Do not run ensurepip on every launch; some
+    # Python builds are noisy even when everything is already present.
+    pip_check = capture([str(py), "-m", "pip", "--version"])
+    if pip_check.returncode != 0:
+        run([str(py), "-m", "ensurepip", "--upgrade"], check=False, quiet=True)
+    marker = RUNTIME / "hermes-install.marker"
+    source_marker = hashlib.sha256(str(SRC.resolve()).encode()).hexdigest()[:16]
+    installed_marker = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    if force or not venv_bin("hermes").exists() or installed_marker != source_marker:
+        print("→ Installing Hermes into host-local venv from USB source")
+        run([str(py), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"], env=portable_env())
+        # Avoid installing huge optional extras here; Hermes can still be reinstalled manually with extras if needed.
+        run([str(py), "-m", "pip", "install", "-e", str(SRC), "python-telegram-bot[webhooks]==22.6"], env=portable_env())
+        marker.write_text(source_marker, encoding="utf-8")
+
+
+def node_bin() -> Path:
+    return NODE_HOME / ("node.exe" if is_windows() else "bin/node")
+
+
+def npm_bin() -> Path:
+    if is_windows():
+        return NODE_HOME / "npm.cmd"
+    return NODE_HOME / "bin/npm"
+
+
+def node_major(path: Path | str) -> int | None:
+    try:
+        cp = capture([str(path), "--version"])
+        if cp.returncode == 0:
+            return int(cp.stdout.strip().lstrip("v").split(".")[0])
+    except Exception:
+        return None
+    return None
+
+
+def system_node_ok() -> str | None:
+    env = os.environ.copy()
+    env["PATH"] = _filtered_inherited_path(env)
+    candidate = shutil.which("node", path=env["PATH"])
+    if candidate and (node_major(candidate) or 0) >= MIN_NODE_MAJOR:
+        npm = shutil.which("npm", path=env["PATH"])
+        if npm:
+            return candidate
+    return None
+
+
+def node_archive_info():
+    sysname = platform.system().lower()
+    machine = platform.machine().lower()
+    arch = "x64" if machine in {"x86_64", "amd64"} else "arm64" if machine in {"arm64", "aarch64"} else None
+    if arch is None:
+        raise SystemExit(f"Unsupported CPU architecture for automatic Node download: {machine}")
+    if sysname == "linux":
+        return f"node-v{NODE_VERSION}-linux-{arch}.tar.xz", f"https://nodejs.org/dist/v{NODE_VERSION}/node-v{NODE_VERSION}-linux-{arch}.tar.xz"
+    if sysname == "darwin":
+        return f"node-v{NODE_VERSION}-darwin-{arch}.tar.gz", f"https://nodejs.org/dist/v{NODE_VERSION}/node-v{NODE_VERSION}-darwin-{arch}.tar.gz"
+    if sysname == "windows":
+        return f"node-v{NODE_VERSION}-win-{arch}.zip", f"https://nodejs.org/dist/v{NODE_VERSION}/node-v{NODE_VERSION}-win-{arch}.zip"
+    raise SystemExit(f"Unsupported OS for automatic Node download: {platform.system()}")
+
+
+def ensure_node(force=False):
+    if not force and node_bin().exists() and (node_major(node_bin()) or 0) >= MIN_NODE_MAJOR and npm_bin().exists():
+        return
+    if not force and system_node_ok():
+        print("✓ Using host Node/npm from PATH")
+        return
+    print(f"→ Downloading host-local Node.js v{NODE_VERSION}")
+    RUNTIME.mkdir(parents=True, exist_ok=True)
+    archive_name, url = node_archive_info()
+    archive = RUNTIME / archive_name
+    if force and NODE_HOME.exists():
+        shutil.rmtree(NODE_HOME, ignore_errors=True)
+    if not archive.exists():
+        urllib.request.urlretrieve(url, archive)
+    tmp_extract = RUNTIME / "node-extract"
+    shutil.rmtree(tmp_extract, ignore_errors=True)
+    tmp_extract.mkdir(parents=True)
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as z:
+            z.extractall(tmp_extract)
+    else:
+        with tarfile.open(archive) as t:
+            t.extractall(tmp_extract)
+    children = [p for p in tmp_extract.iterdir() if p.is_dir()]
+    if not children:
+        raise SystemExit("Node archive extraction produced no directory")
+    if NODE_HOME.exists():
+        shutil.rmtree(NODE_HOME, ignore_errors=True)
+    shutil.move(str(children[0]), str(NODE_HOME))
+    shutil.rmtree(tmp_extract, ignore_errors=True)
+
+
+def bridge_hash(src_bridge: Path) -> str:
+    h = hashlib.sha256()
+    for name in ["package.json", "package-lock.json", "bridge.js"]:
+        p = src_bridge / name
+        if p.exists():
+            h.update(name.encode())
+            h.update(p.read_bytes())
+    node = capture([str(node_bin() if node_bin().exists() else shutil.which("node") or "node"), "--version"], env=portable_env())
+    h.update(node.stdout.encode())
+    return h.hexdigest()
+
+
+def ensure_whatsapp_bridge(force=False):
+    src_bridge = SRC / "scripts" / "whatsapp-bridge"
+    if not src_bridge.exists():
+        print("! WhatsApp bridge source is missing; skipping bridge preparation")
+        return
+    ensure_node(force=False)
+    desired = bridge_hash(src_bridge)
+    marker = WHATSAPP_RUNTIME / ".portable-bridge-hash"
+    if force and WHATSAPP_RUNTIME.exists():
+        shutil.rmtree(WHATSAPP_RUNTIME, ignore_errors=True)
+    if not WHATSAPP_RUNTIME.exists() or (marker.read_text(encoding="utf-8") if marker.exists() else "") != desired:
+        print("→ Preparing WhatsApp bridge in host-local cache")
+        if WHATSAPP_RUNTIME.exists():
+            shutil.rmtree(WHATSAPP_RUNTIME, ignore_errors=True)
+        shutil.copytree(src_bridge, WHATSAPP_RUNTIME, ignore=shutil.ignore_patterns("node_modules", "*.log"))
+        npm = str(npm_bin()) if npm_bin().exists() else shutil.which("npm") or "npm"
+        run([npm, "install", "--no-fund", "--no-audit", "--progress=false"], cwd=WHATSAPP_RUNTIME, env=portable_env(), timeout=900)
+        marker.write_text(desired, encoding="utf-8")
+    else:
+        print("✓ WhatsApp bridge runtime is current")
+
+
+def hermes_cmd(args: list[str], *, env=None, cwd=None):
+    h = venv_bin("hermes")
+    if h.exists():
+        return [str(h)] + args
+    return [str(venv_python()), "-m", "hermes_cli.main"] + args
+
+
+def save_state(extra: dict):
+    STATE.write_text(json.dumps(extra, indent=2) + "\n", encoding="utf-8")
+
+
+def start_gateway(env) -> subprocess.Popen | None:
+    print("→ Starting gateway as child process (portable mode; no service install)")
+    log = DATA / "logs" / "gateway-portable-child.log"
+    fh = open(log, "a", encoding="utf-8")
+    kwargs = {}
+    if is_windows():
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+    else:
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(hermes_cmd(["gateway", "run"], env=env), cwd=SRC, env=env, stdout=fh, stderr=subprocess.STDOUT, **kwargs)
+    save_state({"gateway_pid": proc.pid, "log": str(log), "runtime": str(RUNTIME), "started_at": time.time()})
+    print(f"  gateway pid: {proc.pid}")
+    print(f"  gateway log: {log}")
+    return proc
+
+
+def stop_process_tree(proc: subprocess.Popen | None):
+    if not proc or proc.poll() is not None:
+        return
+    print("→ Stopping gateway child process")
+    try:
+        if is_windows():
+            proc.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
+        else:
+            os.killpg(proc.pid, signal.SIGTERM)
+        proc.wait(timeout=10)
+    except Exception:
+        try:
+            if is_windows():
+                proc.kill()
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            pass
+
+
+def doctor(env):
+    print_header()
+    print("Checks:")
+    print(f"  source exists:        {SRC.exists()}  {SRC}")
+    print(f"  data exists:          {DATA.exists()}  {DATA}")
+    print(f"  .env exists:          {(DATA / '.env').exists()}  {DATA / '.env'}")
+    print(f"  venv python:          {venv_python().exists()}  {venv_python()}")
+    filtered_path = _filtered_inherited_path(os.environ.copy())
+    nb = node_bin() if node_bin().exists() else Path(shutil.which("node", path=filtered_path) or "")
+    print(f"  node:                 {nb}  major={node_major(nb) if nb else None}")
+    npm = npm_bin() if npm_bin().exists() else Path(shutil.which("npm", path=filtered_path) or "")
+    print(f"  npm:                  {npm}")
+    print(f"  whatsapp bridge:      {WHATSAPP_RUNTIME / 'bridge.js'} exists={(WHATSAPP_RUNTIME / 'bridge.js').exists()}")
+    print(f"  whatsapp session:     {DATA / 'platforms' / 'whatsapp' / 'session'}")
+    print(f"  whatsapp creds:       {(DATA / 'platforms' / 'whatsapp' / 'session' / 'creds.json').exists()}")
+    if venv_bin("hermes").exists():
+        cp = capture(hermes_cmd(["config", "env-path"], env=env), env=env, cwd=SRC)
+        print(f"  hermes env-path:      {cp.stdout.strip() or cp.stderr.strip()}")
+
+
+def command_run(args):
+    ensure_dirs()
+    env = portable_env()
+    print_header()
+    ensure_venv(force=args.repair)
+    ensure_node(force=args.repair_node)
+    if not args.skip_whatsapp_prepare:
+        ensure_whatsapp_bridge(force=args.repair)
+    if args.doctor:
+        doctor(portable_env())
+        return 0
+    if args.pair_whatsapp:
+        return subprocess.call(hermes_cmd(["whatsapp"], env=portable_env()), cwd=SRC, env=portable_env())
+    gateway = None
+    try:
+        if args.gateway_only or (not args.no_gateway and not args.hermes_args):
+            gateway = start_gateway(portable_env())
+            if args.gateway_only:
+                print("Gateway-only mode. Press Ctrl+C to stop.")
+                while gateway.poll() is None:
+                    time.sleep(1)
+                return gateway.returncode or 0
+        hermes_args = args.hermes_args or []
+        if hermes_args and hermes_args[0].lower() == "hermes":
+            hermes_args = hermes_args[1:]
+        return subprocess.call(hermes_cmd(hermes_args, env=portable_env()), cwd=SRC, env=portable_env())
+    finally:
+        stop_process_tree(gateway)
+
+
+def reset_runtime():
+    print(f"Removing host-local runtime cache: {RUNTIME}")
+    shutil.rmtree(RUNTIME, ignore_errors=True)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Hermes portable v2 launcher")
+    parser.add_argument("--no-gateway", action="store_true", help="do not start gateway child")
+    parser.add_argument("--gateway-only", action="store_true", help="run gateway in foreground-like supervised mode")
+    parser.add_argument("--doctor", action="store_true", help="check portable paths/dependencies")
+    parser.add_argument("--repair", action="store_true", help="rebuild venv and WhatsApp bridge runtime")
+    parser.add_argument("--repair-node", action="store_true", help="redownload host-local Node runtime")
+    parser.add_argument("--reset-runtime", action="store_true", help="delete host-local runtime cache and exit")
+    parser.add_argument("--pair-whatsapp", action="store_true", help="prepare runtime and run Hermes WhatsApp pairing")
+    parser.add_argument("--skip-whatsapp-prepare", action="store_true", help="skip npm install/copy of WhatsApp bridge")
+    parser.add_argument("hermes_args", nargs=argparse.REMAINDER, help="arguments passed to hermes; prefix with -- before Hermes args if needed")
+    args = parser.parse_args(argv)
+    if args.hermes_args and args.hermes_args[0] == "--":
+        args.hermes_args = args.hermes_args[1:]
+    if args.reset_runtime:
+        reset_runtime()
+        return 0
+    return command_run(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

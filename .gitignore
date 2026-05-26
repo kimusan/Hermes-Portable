@@ -1,0 +1,24 @@
+# Runtime cache and user data
+data/
+.cache/
+src/
+_cleaned_state_backups/
+
+# Legacy portable-v1 launchers/scripts kept only in local working copies
+launch.bat
+launch.sh
+scripts/
+
+# Generated portable runtime metadata
+portable/manifest.json
+portable/runtime-state.json
+
+# Python/runtime byproducts
+__pycache__/
+*.py[cod]
+*.flag
+*.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
