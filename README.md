@@ -406,6 +406,21 @@ WHATSAPP_ALLOWED_USERS=12345678
 ./hermes-portable -- hermes config env-path
 ```
 
+## Startup styling
+
+Hermes Portable shows a compact ANSI/ASCII startup banner inspired by the upstream Hermes CLI. It follows normal terminal color conventions:
+
+```bash
+# Force color even when stdout is redirected
+HERMES_PORTABLE_COLOR=always ./hermes-portable --doctor
+
+# Disable ANSI colors but keep the text logo
+NO_COLOR=1 ./hermes-portable --doctor
+
+# Disable the logo entirely for very plain logs/scripts
+HERMES_PORTABLE_NO_LOGO=1 ./hermes-portable --doctor
+```
+
 ## Directory map
 
 ```text

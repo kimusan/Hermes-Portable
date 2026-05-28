@@ -36,6 +36,75 @@ MIN_PYTHON = (3, 11)
 RELEASE_VERSION = "0.1.0"
 SETUP_PLATFORMS = ("telegram", "discord", "slack", "signal", "whatsapp", "all")
 
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+GOLD = "\033[38;2;255;215;0m"
+AMBER = "\033[38;2;255;191;0m"
+BRONZE = "\033[38;2;205;127;50m"
+CREAM = "\033[38;2;255;248;220m"
+MUTED = "\033[38;2;184;134;11m"
+GREEN = "\033[38;2;80;220;130m"
+BLUE = "\033[38;2;100;180;255m"
+RED = "\033[38;2;255;100;100m"
+
+HERMES_PORTABLE_LOGO = """██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗
+██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝
+███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗
+██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║
+██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║
+╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"""
+
+
+def wants_color() -> bool:
+    setting = os.environ.get("HERMES_PORTABLE_COLOR", "").strip().lower()
+    if setting in {"always", "1", "true", "yes", "on"}:
+        return True
+    if setting in {"never", "0", "false", "no", "off"}:
+        return False
+    if os.environ.get("NO_COLOR") or os.environ.get("HERMES_PORTABLE_NO_COLOR"):
+        return False
+    term = os.environ.get("TERM", "")
+    return sys.stdout.isatty() and term.lower() != "dumb"
+
+
+def style(text: object, color: str = "", *, bold: bool = False, dim: bool = False) -> str:
+    value = str(text)
+    if not wants_color():
+        return value
+    prefix = ""
+    if bold:
+        prefix += BOLD
+    if dim:
+        prefix += DIM
+    prefix += color
+    return f"{prefix}{value}{RESET}" if prefix else value
+
+
+def icon(ok: bool) -> str:
+    return style("✓", GREEN, bold=True) if ok else style("✗", RED, bold=True)
+
+
+def info(message: str):
+    print(f"{style('→', BLUE, bold=True)} {message}")
+
+
+def success(message: str):
+    print(f"{style('✓', GREEN, bold=True)} {message}")
+
+
+def warn(message: str):
+    print(f"{style('!', AMBER, bold=True)} {message}")
+
+
+def key_value(label: str, value: object):
+    print(f"  {style((label + ':').ljust(22), AMBER, bold=True)} {value}")
+
+
+def check_value(label: str, ok: bool, detail: object = ""):
+    suffix = f"  {detail}" if detail else ""
+    print(f"  {style((label + ':').ljust(36), MUTED)} {icon(ok)} {ok}{suffix}")
+
 
 def _real_home() -> Path:
     """Return the OS account home, ignoring portable launchers that override HOME."""
@@ -115,7 +184,7 @@ def venv_bin(name: str) -> Path:
 
 def run(cmd, *, cwd=None, env=None, check=True, quiet=False, timeout=None):
     if not quiet:
-        print("→", " ".join(map(str, cmd)))
+        info(" ".join(map(str, cmd)))
     kwargs = {}
     if quiet:
         kwargs.update({"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
@@ -192,12 +261,31 @@ def portable_env() -> dict[str, str]:
 
 
 def print_header():
-    print(f"Hermes Portable v{RELEASE_VERSION}")
-    print(f"  root:          {ROOT}")
-    print(f"  HERMES_HOME:   {DATA}")
-    print(f"  env file:      {DATA / '.env'}")
-    print(f"  runtime cache: {RUNTIME}")
-    print(f"  usb id:        {USB_ID}")
+    if os.environ.get("HERMES_PORTABLE_NO_LOGO"):
+        print(style(f"Hermes Portable v{RELEASE_VERSION}", GOLD, bold=True))
+    else:
+        columns = shutil.get_terminal_size((88, 24)).columns
+        print()
+        if columns >= 72:
+            logo_lines = HERMES_PORTABLE_LOGO.splitlines()
+            palette = [GOLD, GOLD, AMBER, AMBER, BRONZE, BRONZE]
+            for line, color in zip(logo_lines, palette):
+                print(style(line, color, bold=True))
+            subtitle = f"⚕ Portable USB runtime · Hermes Agent v{RELEASE_VERSION}"
+            print(style(subtitle, CREAM, bold=True))
+            print(style("─" * min(len(logo_lines[0]), columns), MUTED))
+        else:
+            title = f" ⚕ Hermes Portable v{RELEASE_VERSION} "
+            width = min(max(len(title) + 4, 34), columns)
+            inner = width - 2
+            print(style("╔" + "═" * inner + "╗", GOLD, bold=True))
+            print(style("║", GOLD, bold=True) + style(title.center(inner), CREAM, bold=True) + style("║", GOLD, bold=True))
+            print(style("╚" + "═" * inner + "╝", GOLD, bold=True))
+    key_value("root", ROOT)
+    key_value("HERMES_HOME", DATA)
+    key_value("env file", DATA / '.env')
+    key_value("runtime cache", RUNTIME)
+    key_value("usb id", style(USB_ID, MUTED))
 
 
 def ensure_dirs():
@@ -216,7 +304,7 @@ def ensure_venv(force=False):
     if force and VENV.exists():
         shutil.rmtree(VENV, ignore_errors=True)
     if not py.exists():
-        print("→ Creating host-local Python venv")
+        info("Creating host-local Python venv")
         run([sys.executable, "-m", "venv", str(VENV)])
     # Make sure pip exists. Do not run ensurepip on every launch; some
     # Python builds are noisy even when everything is already present.
@@ -227,7 +315,7 @@ def ensure_venv(force=False):
     source_marker = hashlib.sha256(str(SRC.resolve()).encode()).hexdigest()[:16]
     installed_marker = marker.read_text(encoding="utf-8") if marker.exists() else ""
     if force or not venv_bin("hermes").exists() or installed_marker != source_marker:
-        print("→ Installing Hermes into host-local venv from USB source")
+        info("Installing Hermes into host-local venv from USB source")
         run([str(py), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"], env=portable_env())
         # Install Hermes plus the mainstream gateway SDKs. Signal does not
         # need an extra Python package, but its adapter is included in Hermes
@@ -286,9 +374,9 @@ def ensure_node(force=False):
     if not force and node_bin().exists() and (node_major(node_bin()) or 0) >= MIN_NODE_MAJOR and npm_bin().exists():
         return
     if not force and system_node_ok():
-        print("✓ Using host Node/npm from PATH")
+        success("Using host Node/npm from PATH")
         return
-    print(f"→ Downloading host-local Node.js v{NODE_VERSION}")
+    info(f"Downloading host-local Node.js v{NODE_VERSION}")
     RUNTIME.mkdir(parents=True, exist_ok=True)
     archive_name, url = node_archive_info()
     archive = RUNTIME / archive_name
@@ -329,15 +417,19 @@ def bridge_hash(src_bridge: Path) -> str:
 def ensure_whatsapp_bridge(force=False):
     src_bridge = SRC / "scripts" / "whatsapp-bridge"
     if not src_bridge.exists():
-        print("! WhatsApp bridge source is missing; skipping bridge preparation")
+        warn("WhatsApp bridge source is missing; skipping bridge preparation")
         return
-    ensure_node(force=False)
+    if not (
+        (node_bin().exists() and (node_major(node_bin()) or 0) >= MIN_NODE_MAJOR and npm_bin().exists())
+        or system_node_ok()
+    ):
+        ensure_node(force=False)
     desired = bridge_hash(src_bridge)
     marker = WHATSAPP_RUNTIME / ".portable-bridge-hash"
     if force and WHATSAPP_RUNTIME.exists():
         shutil.rmtree(WHATSAPP_RUNTIME, ignore_errors=True)
     if not WHATSAPP_RUNTIME.exists() or (marker.read_text(encoding="utf-8") if marker.exists() else "") != desired:
-        print("→ Preparing WhatsApp bridge in host-local cache")
+        info("Preparing WhatsApp bridge in host-local cache")
         if WHATSAPP_RUNTIME.exists():
             shutil.rmtree(WHATSAPP_RUNTIME, ignore_errors=True)
         shutil.copytree(src_bridge, WHATSAPP_RUNTIME, ignore=shutil.ignore_patterns("node_modules", "*.log"))
@@ -345,7 +437,7 @@ def ensure_whatsapp_bridge(force=False):
         run([npm, "install", "--no-fund", "--no-audit", "--progress=false"], cwd=WHATSAPP_RUNTIME, env=portable_env(), timeout=900)
         marker.write_text(desired, encoding="utf-8")
     else:
-        print("✓ WhatsApp bridge runtime is current")
+        success("WhatsApp bridge runtime is current")
 
 
 def hermes_cmd(args: list[str], *, env=None, cwd=None):
@@ -422,15 +514,15 @@ def setup_platform(platform_name: str) -> int:
     platform_name = platform_name.lower()
     print_platform_setup_notes(platform_name)
     if platform_name == "slack":
-        print("→ Writing Slack app manifest in the portable Hermes home")
+        info("Writing Slack app manifest in the portable Hermes home")
         subprocess.call(hermes_cmd(["slack", "manifest", "--write"], env=portable_env()), cwd=SRC, env=portable_env())
-    print("→ Starting upstream Hermes gateway setup wizard")
+    info("Starting upstream Hermes gateway setup wizard")
     print("  Select the platform(s) you want to configure, then restart the portable gateway.")
     return subprocess.call(hermes_cmd(["gateway", "setup"], env=portable_env()), cwd=SRC, env=portable_env())
 
 
 def start_gateway(env) -> subprocess.Popen | None:
-    print("→ Starting gateway as child process (portable mode; no service install)")
+    info("Starting gateway as child process (portable mode; no service install)")
     log = DATA / "logs" / "gateway-portable-child.log"
     fh = open(log, "a", encoding="utf-8")
     kwargs = {}
@@ -448,7 +540,7 @@ def start_gateway(env) -> subprocess.Popen | None:
 def stop_process_tree(proc: subprocess.Popen | None):
     if not proc or proc.poll() is not None:
         return
-    print("→ Stopping gateway child process")
+    info("Stopping gateway child process")
     try:
         if is_windows():
             proc.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
@@ -476,21 +568,22 @@ def _signal_daemon_status(env: dict[str, str]) -> str:
         return f"not reachable ({exc.__class__.__name__})"
 
 
-def doctor(env):
-    print_header()
-    print("Checks:")
-    print(f"  source exists:        {SRC.exists()}  {SRC}")
-    print(f"  data exists:          {DATA.exists()}  {DATA}")
-    print(f"  .env exists:          {(DATA / '.env').exists()}  {DATA / '.env'}")
-    print(f"  venv python:          {venv_python().exists()}  {venv_python()}")
+def doctor(env, *, show_header: bool = True):
+    if show_header:
+        print_header()
+    print(style("Checks:", GOLD, bold=True))
+    check_value("source exists", SRC.exists(), SRC)
+    check_value("data exists", DATA.exists(), DATA)
+    check_value(".env exists", (DATA / '.env').exists(), DATA / '.env')
+    check_value("venv python", venv_python().exists(), venv_python())
     filtered_path = _filtered_inherited_path(os.environ.copy())
     nb = node_bin() if node_bin().exists() else Path(shutil.which("node", path=filtered_path) or "")
-    print(f"  node:                 {nb}  major={node_major(nb) if nb else None}")
+    check_value("node", bool(nb), f"{nb}  major={node_major(nb) if nb else None}")
     npm = npm_bin() if npm_bin().exists() else Path(shutil.which("npm", path=filtered_path) or "")
-    print(f"  npm:                  {npm}")
-    print(f"  whatsapp bridge:      {WHATSAPP_RUNTIME / 'bridge.js'} exists={(WHATSAPP_RUNTIME / 'bridge.js').exists()}")
-    print(f"  whatsapp session:     {DATA / 'platforms' / 'whatsapp' / 'session'}")
-    print(f"  whatsapp creds:       {(DATA / 'platforms' / 'whatsapp' / 'session' / 'creds.json').exists()}")
+    check_value("npm", bool(npm), npm or "not found")
+    check_value("whatsapp bridge", (WHATSAPP_RUNTIME / 'bridge.js').exists(), WHATSAPP_RUNTIME / 'bridge.js')
+    key_value("whatsapp session", DATA / 'platforms' / 'whatsapp' / 'session')
+    check_value("whatsapp creds", (DATA / 'platforms' / 'whatsapp' / 'session' / 'creds.json').exists())
     slack_bot_token = _env_value("SLACK_BOT_TOKEN", env)
     slack_app_token = _env_value("SLACK_APP_TOKEN", env)
     slack_has_allowlist = any(
@@ -510,13 +603,14 @@ def doctor(env):
         "signal configured": _env_has("SIGNAL_HTTP_URL", env) and _env_has("SIGNAL_ACCOUNT", env),
     }
     for label, ok in platform_checks.items():
-        print(f"  {label + ':':22} {ok}")
+        check_value(label, ok)
     signal_cli = shutil.which("signal-cli", path=filtered_path)
-    print(f"  signal-cli:           {signal_cli or 'not found'}")
-    print(f"  signal daemon:        {_signal_daemon_status(env)}")
+    check_value("signal-cli", bool(signal_cli), signal_cli or "not found")
+    signal_status = _signal_daemon_status(env)
+    check_value("signal daemon", signal_status.startswith("reachable"), signal_status)
     if venv_bin("hermes").exists():
         cp = capture(hermes_cmd(["config", "env-path"], env=env), env=env, cwd=SRC)
-        print(f"  hermes env-path:      {cp.stdout.strip() or cp.stderr.strip()}")
+        key_value("hermes env-path", cp.stdout.strip() or cp.stderr.strip())
 
 
 def command_run(args):
@@ -528,7 +622,7 @@ def command_run(args):
     if not args.skip_whatsapp_prepare:
         ensure_whatsapp_bridge(force=args.repair)
     if args.doctor:
-        doctor(portable_env())
+        doctor(portable_env(), show_header=False)
         return 0
     if args.setup_platform:
         return setup_platform(args.setup_platform)
