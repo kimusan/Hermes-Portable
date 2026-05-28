@@ -9,6 +9,7 @@ Design goals:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -269,28 +270,34 @@ def portable_env() -> dict[str, str]:
     return env
 
 
-def print_header():
+def print_banner():
     if os.environ.get("HERMES_PORTABLE_NO_LOGO"):
         print(style(f"Hermes Portable v{RELEASE_VERSION}", GOLD, bold=True))
+        return
+    columns = shutil.get_terminal_size((88, 24)).columns
+    print()
+    logo_width = max(len(line) for line in HERMES_PORTABLE_LOGO.splitlines())
+    if columns >= logo_width:
+        logo_lines = HERMES_PORTABLE_LOGO.splitlines()
+        palette = [GOLD, GOLD, AMBER, AMBER, BRONZE, BRONZE]
+        for line, color in zip(logo_lines, palette):
+            print(style(line, color, bold=True))
+        subtitle = f"⚕ Portable USB runtime · Hermes Agent v{RELEASE_VERSION}"
+        print(style(subtitle, CREAM, bold=True))
+        print(style("─" * min(len(logo_lines[0]), columns), MUTED))
     else:
-        columns = shutil.get_terminal_size((88, 24)).columns
-        print()
-        logo_width = max(len(line) for line in HERMES_PORTABLE_LOGO.splitlines())
-        if columns >= logo_width:
-            logo_lines = HERMES_PORTABLE_LOGO.splitlines()
-            palette = [GOLD, GOLD, AMBER, AMBER, BRONZE, BRONZE]
-            for line, color in zip(logo_lines, palette):
-                print(style(line, color, bold=True))
-            subtitle = f"⚕ Portable USB runtime · Hermes Agent v{RELEASE_VERSION}"
-            print(style(subtitle, CREAM, bold=True))
-            print(style("─" * min(len(logo_lines[0]), columns), MUTED))
-        else:
-            title = f" ⚕ Hermes Portable v{RELEASE_VERSION} "
-            width = min(max(len(title) + 4, 34), columns)
-            inner = width - 2
-            print(style("╔" + "═" * inner + "╗", GOLD, bold=True))
-            print(style("║", GOLD, bold=True) + style(title.center(inner), CREAM, bold=True) + style("║", GOLD, bold=True))
-            print(style("╚" + "═" * inner + "╝", GOLD, bold=True))
+        title = f" ⚕ Hermes Portable v{RELEASE_VERSION} "
+        width = min(max(len(title) + 4, 34), columns)
+        inner = width - 2
+        print(style("╔" + "═" * inner + "╗", GOLD, bold=True))
+        print(style("║", GOLD, bold=True) + style(title.center(inner), CREAM, bold=True) + style("║", GOLD, bold=True))
+        print(style("╚" + "═" * inner + "╝", GOLD, bold=True))
+
+
+def print_header(*, show_paths: bool = True):
+    print_banner()
+    if not show_paths:
+        return
     key_value("root", ROOT)
     key_value("HERMES_HOME", DATA)
     key_value("env file", DATA / '.env')
@@ -709,8 +716,27 @@ def reset_runtime():
     shutil.rmtree(RUNTIME, ignore_errors=True)
 
 
+class PortableArgumentParser(argparse.ArgumentParser):
+    def _print_banner_once(self, file=None):
+        if getattr(self, "_portable_banner_printed", False):
+            return
+        self._portable_banner_printed = True
+        stream = file or sys.stdout
+        with contextlib.redirect_stdout(stream):
+            print_header(show_paths=False)
+            print()
+
+    def print_help(self, file=None):
+        self._print_banner_once(file=file)
+        super().print_help(file=file)
+
+    def error(self, message):
+        self._print_banner_once(file=sys.stderr)
+        super().error(message)
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Hermes portable v2 launcher")
+    parser = PortableArgumentParser(description="Hermes portable v2 launcher")
     parser.add_argument("--no-gateway", action="store_true", help="do not start gateway child")
     parser.add_argument("--gateway-only", action="store_true", help="run gateway in foreground-like supervised mode")
     parser.add_argument("--doctor", action="store_true", help="check portable paths/dependencies")
@@ -728,6 +754,7 @@ def main(argv=None):
     if args.hermes_args and args.hermes_args[0] == "--":
         args.hermes_args = args.hermes_args[1:]
     if args.reset_runtime:
+        print_header(show_paths=False)
         reset_runtime()
         return 0
     return command_run(args)
