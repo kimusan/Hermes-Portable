@@ -35,6 +35,14 @@ MIN_NODE_MAJOR = 18
 MIN_PYTHON = (3, 11)
 RELEASE_VERSION = "0.1.0"
 SETUP_PLATFORMS = ("telegram", "discord", "slack", "signal", "whatsapp", "all")
+PLATFORM_ACTIONS = {
+    "telegram": {"setup"},
+    "discord": {"setup"},
+    "slack": {"setup", "manifest"},
+    "signal": {"setup"},
+    "whatsapp": {"setup", "pair"},
+    "all": {"setup"},
+}
 SHARED_GATEWAY_PLATFORMS = tuple(p for p in SETUP_PLATFORMS if p not in {"whatsapp", "all"})
 
 RESET = "\033[0m"
@@ -522,20 +530,50 @@ def print_platform_setup_notes(platform_name: str):
         print()
     if platform_name in {"whatsapp", "all"}:
         print("WhatsApp:")
-        print("  1. Run ./hermes-portable --pair-whatsapp and scan the QR code.")
+        print("  1. Run ./hermes-portable --platform-action whatsapp pair and scan the QR code.")
         print("  2. Configure WHATSAPP_ENABLED, WHATSAPP_MODE, and WHATSAPP_ALLOWED_USERS.")
         print()
 
 
-def setup_platform(platform_name: str) -> int:
+def _platform_action_supported(platform_name: str, action: str) -> bool:
+    return action in PLATFORM_ACTIONS.get(platform_name, set())
+
+
+def _normalize_platform_action(args) -> tuple[str, str] | None:
+    if args.platform_action:
+        platform_name, action = args.platform_action
+        return platform_name.lower(), action.lower()
+    if args.setup_platform:
+        return args.setup_platform.lower(), "setup"
+    if args.pair_whatsapp:
+        return "whatsapp", "pair"
+    return None
+
+
+def run_platform_action(platform_name: str, action: str) -> int:
     platform_name = platform_name.lower()
-    print_platform_setup_notes(platform_name)
-    if platform_name == "slack":
+    action = action.lower()
+    if platform_name not in SETUP_PLATFORMS:
+        raise SystemExit(f"Unsupported platform: {platform_name}")
+    if not _platform_action_supported(platform_name, action):
+        supported = ", ".join(sorted(PLATFORM_ACTIONS.get(platform_name, set()))) or "none"
+        raise SystemExit(f"Unsupported action '{action}' for {platform_name}; supported actions: {supported}")
+    env = portable_env()
+    if action == "setup":
+        print_platform_setup_notes(platform_name)
+        if platform_name == "slack":
+            info("Writing Slack app manifest in the portable Hermes home")
+            subprocess.call(hermes_cmd(["slack", "manifest", "--write"], env=env), cwd=SRC, env=env)
+        info("Starting upstream Hermes gateway setup wizard")
+        print("  Select the platform(s) you want to configure, then restart the portable gateway.")
+        return subprocess.call(hermes_cmd(["gateway", "setup"], env=env), cwd=SRC, env=env)
+    if action == "manifest":
         info("Writing Slack app manifest in the portable Hermes home")
-        subprocess.call(hermes_cmd(["slack", "manifest", "--write"], env=portable_env()), cwd=SRC, env=portable_env())
-    info("Starting upstream Hermes gateway setup wizard")
-    print("  Select the platform(s) you want to configure, then restart the portable gateway.")
-    return subprocess.call(hermes_cmd(["gateway", "setup"], env=portable_env()), cwd=SRC, env=portable_env())
+        return subprocess.call(hermes_cmd(["slack", "manifest", "--write"], env=env), cwd=SRC, env=env)
+    if action == "pair":
+        prepare_gateway_runtime(platform_name, force=False)
+        return subprocess.call(hermes_cmd(["whatsapp"], env=env), cwd=SRC, env=env)
+    raise SystemExit(f"Unhandled platform action: {platform_name} {action}")
 
 
 def start_gateway(env) -> subprocess.Popen | None:
@@ -633,22 +671,22 @@ def doctor(env, *, show_header: bool = True):
 def command_run(args):
     ensure_dirs()
     env = portable_env()
+    platform_action = _normalize_platform_action(args)
     print_header()
     ensure_venv(force=args.repair)
     ensure_node(force=args.repair_node)
     if not args.skip_gateway_prepare:
-        prepare_gateway_runtime(args.prepare_platform or "all", force=args.repair)
-    elif args.prepare_platform:
+        prepare_target = args.prepare_platform or (platform_action[0] if platform_action else "all")
+        prepare_gateway_runtime(prepare_target, force=args.repair)
+    elif args.prepare_platform or (platform_action and platform_action[1] == "pair"):
         warn("Skipping requested platform preparation because gateway preparation is disabled")
-    if args.prepare_platform and not (args.doctor or args.setup_platform or args.pair_whatsapp or args.gateway_only or args.hermes_args):
+    if args.prepare_platform and not (platform_action or args.doctor or args.gateway_only or args.hermes_args):
         return 0
     if args.doctor:
         doctor(portable_env(), show_header=False)
         return 0
-    if args.setup_platform:
-        return setup_platform(args.setup_platform)
-    if args.pair_whatsapp:
-        return subprocess.call(hermes_cmd(["whatsapp"], env=portable_env()), cwd=SRC, env=portable_env())
+    if platform_action:
+        return run_platform_action(*platform_action)
     gateway = None
     try:
         if args.gateway_only or (not args.no_gateway and not args.hermes_args):
@@ -681,6 +719,7 @@ def main(argv=None):
     parser.add_argument("--reset-runtime", action="store_true", help="delete host-local runtime cache and exit")
     parser.add_argument("--setup-platform", choices=SETUP_PLATFORMS, help="show portable setup notes, then run Hermes gateway setup for a messenger platform")
     parser.add_argument("--prepare-platform", choices=SETUP_PLATFORMS, help="prepare the portable runtime for a messenger platform and exit unless another action is requested")
+    parser.add_argument("--platform-action", nargs=2, metavar=("PLATFORM", "ACTION"), help="run a platform-specific portable action such as 'slack manifest' or 'whatsapp pair'")
     parser.add_argument("--pair-whatsapp", action="store_true", help="prepare runtime and run Hermes WhatsApp pairing")
     parser.add_argument("--skip-gateway-prepare", dest="skip_gateway_prepare", action="store_true", help="skip gateway-specific host-cache preparation such as the WhatsApp bridge")
     parser.add_argument("--skip-whatsapp-prepare", dest="skip_gateway_prepare", action="store_true", help=argparse.SUPPRESS)
