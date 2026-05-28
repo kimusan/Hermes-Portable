@@ -35,6 +35,7 @@ MIN_NODE_MAJOR = 18
 MIN_PYTHON = (3, 11)
 RELEASE_VERSION = "0.1.0"
 SETUP_PLATFORMS = ("telegram", "discord", "slack", "signal", "whatsapp", "all")
+SHARED_GATEWAY_PLATFORMS = tuple(p for p in SETUP_PLATFORMS if p not in {"whatsapp", "all"})
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -441,6 +442,21 @@ def ensure_whatsapp_bridge(force=False):
         success("WhatsApp bridge runtime is current")
 
 
+def prepare_gateway_runtime(platform_name: str, *, force: bool = False):
+    platform_name = platform_name.lower()
+    if platform_name not in SETUP_PLATFORMS:
+        raise SystemExit(f"Unsupported gateway platform for preparation: {platform_name}")
+    if platform_name == "all":
+        success("Shared Python gateway runtime is current for Telegram, Discord, Slack, and Signal")
+        ensure_whatsapp_bridge(force=force)
+        return
+    if platform_name in SHARED_GATEWAY_PLATFORMS:
+        success(f"{platform_name.title()} uses the shared portable Python gateway runtime")
+        return
+    if platform_name == "whatsapp":
+        ensure_whatsapp_bridge(force=force)
+
+
 def hermes_cmd(args: list[str], *, env=None, cwd=None):
     h = venv_bin("hermes")
     if h.exists():
@@ -620,8 +636,12 @@ def command_run(args):
     print_header()
     ensure_venv(force=args.repair)
     ensure_node(force=args.repair_node)
-    if not args.skip_whatsapp_prepare:
-        ensure_whatsapp_bridge(force=args.repair)
+    if not args.skip_gateway_prepare:
+        prepare_gateway_runtime(args.prepare_platform or "all", force=args.repair)
+    elif args.prepare_platform:
+        warn("Skipping requested platform preparation because gateway preparation is disabled")
+    if args.prepare_platform and not (args.doctor or args.setup_platform or args.pair_whatsapp or args.gateway_only or args.hermes_args):
+        return 0
     if args.doctor:
         doctor(portable_env(), show_header=False)
         return 0
@@ -656,12 +676,14 @@ def main(argv=None):
     parser.add_argument("--no-gateway", action="store_true", help="do not start gateway child")
     parser.add_argument("--gateway-only", action="store_true", help="run gateway in foreground-like supervised mode")
     parser.add_argument("--doctor", action="store_true", help="check portable paths/dependencies")
-    parser.add_argument("--repair", action="store_true", help="rebuild venv and WhatsApp bridge runtime")
+    parser.add_argument("--repair", action="store_true", help="rebuild the shared portable runtime and gateway-specific host caches")
     parser.add_argument("--repair-node", action="store_true", help="redownload host-local Node runtime")
     parser.add_argument("--reset-runtime", action="store_true", help="delete host-local runtime cache and exit")
     parser.add_argument("--setup-platform", choices=SETUP_PLATFORMS, help="show portable setup notes, then run Hermes gateway setup for a messenger platform")
+    parser.add_argument("--prepare-platform", choices=SETUP_PLATFORMS, help="prepare the portable runtime for a messenger platform and exit unless another action is requested")
     parser.add_argument("--pair-whatsapp", action="store_true", help="prepare runtime and run Hermes WhatsApp pairing")
-    parser.add_argument("--skip-whatsapp-prepare", action="store_true", help="skip npm install/copy of WhatsApp bridge")
+    parser.add_argument("--skip-gateway-prepare", dest="skip_gateway_prepare", action="store_true", help="skip gateway-specific host-cache preparation such as the WhatsApp bridge")
+    parser.add_argument("--skip-whatsapp-prepare", dest="skip_gateway_prepare", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("hermes_args", nargs=argparse.REMAINDER, help="arguments passed to hermes; prefix with -- before Hermes args if needed")
     args = parser.parse_args(argv)
     if args.hermes_args and args.hermes_args[0] == "--":
