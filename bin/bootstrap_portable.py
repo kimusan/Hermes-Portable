@@ -679,23 +679,26 @@ def command_run(args):
     ensure_dirs()
     env = portable_env()
     platform_action = _normalize_platform_action(args)
+    cleanup_runtime = should_cleanup_runtime_on_exit(args)
     print_header()
-    ensure_venv(force=args.repair)
-    ensure_node(force=args.repair_node)
-    if not args.skip_gateway_prepare:
-        prepare_target = args.prepare_platform or (platform_action[0] if platform_action else "all")
-        prepare_gateway_runtime(prepare_target, force=args.repair)
-    elif args.prepare_platform or (platform_action and platform_action[1] == "pair"):
-        warn("Skipping requested platform preparation because gateway preparation is disabled")
-    if args.prepare_platform and not (platform_action or args.doctor or args.gateway_only or args.hermes_args):
-        return 0
-    if args.doctor:
-        doctor(portable_env(), show_header=False)
-        return 0
-    if platform_action:
-        return run_platform_action(*platform_action)
+    if cleanup_runtime:
+        info("Temporary-machine mode enabled; host-local runtime cache will be removed on exit")
     gateway = None
     try:
+        ensure_venv(force=args.repair)
+        ensure_node(force=args.repair_node)
+        if not args.skip_gateway_prepare:
+            prepare_target = args.prepare_platform or (platform_action[0] if platform_action else "all")
+            prepare_gateway_runtime(prepare_target, force=args.repair)
+        elif args.prepare_platform or (platform_action and platform_action[1] == "pair"):
+            warn("Skipping requested platform preparation because gateway preparation is disabled")
+        if args.prepare_platform and not (platform_action or args.doctor or args.gateway_only or args.hermes_args):
+            return 0
+        if args.doctor:
+            doctor(portable_env(), show_header=False)
+            return 0
+        if platform_action:
+            return run_platform_action(*platform_action)
         if args.gateway_only or (not args.no_gateway and not args.hermes_args):
             gateway = start_gateway(portable_env())
             if args.gateway_only:
@@ -709,11 +712,19 @@ def command_run(args):
         return subprocess.call(hermes_cmd(hermes_args, env=portable_env()), cwd=SRC, env=portable_env())
     finally:
         stop_process_tree(gateway)
+        if cleanup_runtime:
+            reset_runtime(reason="Cleaning up temporary-machine host-local runtime cache")
 
 
-def reset_runtime():
+def reset_runtime(*, reason: str | None = None):
+    if reason:
+        info(reason)
     print(f"Removing host-local runtime cache: {RUNTIME}")
     shutil.rmtree(RUNTIME, ignore_errors=True)
+
+
+def should_cleanup_runtime_on_exit(args) -> bool:
+    return bool(getattr(args, "temporary", False) or getattr(args, "cleanup_runtime_on_exit", False))
 
 
 class PortableArgumentParser(argparse.ArgumentParser):
@@ -743,6 +754,8 @@ def main(argv=None):
     parser.add_argument("--repair", action="store_true", help="rebuild the shared portable runtime and gateway-specific host caches")
     parser.add_argument("--repair-node", action="store_true", help="redownload host-local Node runtime")
     parser.add_argument("--reset-runtime", action="store_true", help="delete host-local runtime cache and exit")
+    parser.add_argument("--temporary", action="store_true", help="use temporary-machine mode and remove the host-local runtime cache on exit")
+    parser.add_argument("--cleanup-runtime-on-exit", action="store_true", help="remove the host-local runtime cache on exit")
     parser.add_argument("--setup-platform", choices=SETUP_PLATFORMS, help="show portable setup notes, then run Hermes gateway setup for a messenger platform")
     parser.add_argument("--prepare-platform", choices=SETUP_PLATFORMS, help="prepare the portable runtime for a messenger platform and exit unless another action is requested")
     parser.add_argument("--platform-action", nargs=2, metavar=("PLATFORM", "ACTION"), help="run a platform-specific portable action such as 'slack manifest' or 'whatsapp pair'")
