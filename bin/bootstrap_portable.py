@@ -12,6 +12,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import select
 import os
 import platform
 import shutil
@@ -254,6 +255,90 @@ def _extract_single_top_level_dir(archive: Path, destination: Path) -> Path:
 def _reset_runtime_after_update(reason: str):
     reset_runtime(reason=reason)
     warn("Runtime cache removed. The next launch will rebuild Hermes against the updated source.")
+
+
+def _apply_pty_winsize(master_fd: int, stdin_fd: int) -> None:
+    if is_windows():
+        return
+    try:
+        import fcntl
+        import struct
+        import termios
+
+        winsize = fcntl.ioctl(stdin_fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+    except Exception:
+        pass
+
+
+def run_interactive_command(cmd: list[str], *, env: dict[str, str], cwd: Path) -> int:
+    if is_windows() or not sys.stdin.isatty() or not sys.stdout.isatty():
+        return subprocess.call(cmd, cwd=cwd, env=env)
+
+    import pty
+    import termios
+    import tty
+
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        os.chdir(cwd)
+        os.execvpe(cmd[0], cmd, env)
+
+    stdin_fd = sys.stdin.fileno()
+    stdout_fd = sys.stdout.fileno()
+    old_attrs = termios.tcgetattr(stdin_fd)
+    previous_winch = signal.getsignal(signal.SIGWINCH)
+
+    def _on_winch(_signum, _frame):
+        _apply_pty_winsize(master_fd, stdin_fd)
+
+    _apply_pty_winsize(master_fd, stdin_fd)
+    signal.signal(signal.SIGWINCH, _on_winch)
+
+    try:
+        tty.setraw(stdin_fd)
+        while True:
+            ready, _, _ = select.select([stdin_fd, master_fd], [], [])
+            if stdin_fd in ready:
+                data = os.read(stdin_fd, 65536)
+                if not data:
+                    break
+                os.write(master_fd, data)
+            if master_fd in ready:
+                try:
+                    data = os.read(master_fd, 65536)
+                except OSError:
+                    break
+                if not data:
+                    break
+                os.write(stdout_fd, data)
+    finally:
+        termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_attrs)
+        signal.signal(signal.SIGWINCH, previous_winch)
+
+    _, status = os.waitpid(pid, 0)
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return 1
+
+
+def run_hermes_command(args: list[str], *, env: dict[str, str], interactive: bool = False) -> int:
+    cmd = hermes_cmd(args, env=env)
+    if interactive:
+        return run_interactive_command(cmd, env=env, cwd=SRC)
+    return subprocess.call(cmd, cwd=SRC, env=env)
+
+
+def should_use_interactive_pty(hermes_args: list[str]) -> bool:
+    if is_windows() or not sys.stdin.isatty() or not sys.stdout.isatty():
+        return False
+    if not hermes_args:
+        return True
+    if hermes_args[0].lower() in {"chat"}:
+        return True
+    return False
 
 
 def update_wrapper() -> int:
@@ -682,16 +767,16 @@ def run_platform_action(platform_name: str, action: str) -> int:
         print_platform_setup_notes(platform_name)
         if platform_name == "slack":
             info("Writing Slack app manifest in the portable Hermes home")
-            subprocess.call(hermes_cmd(["slack", "manifest", "--write"], env=env), cwd=SRC, env=env)
+            run_hermes_command(["slack", "manifest", "--write"], env=env)
         info("Starting upstream Hermes gateway setup wizard")
         print("  Select the platform(s) you want to configure, then restart the portable gateway.")
-        return subprocess.call(hermes_cmd(["gateway", "setup"], env=env), cwd=SRC, env=env)
+        return run_hermes_command(["gateway", "setup"], env=env, interactive=True)
     if action == "manifest":
         info("Writing Slack app manifest in the portable Hermes home")
-        return subprocess.call(hermes_cmd(["slack", "manifest", "--write"], env=env), cwd=SRC, env=env)
+        return run_hermes_command(["slack", "manifest", "--write"], env=env)
     if action == "pair":
         prepare_gateway_runtime(platform_name, force=False)
-        return subprocess.call(hermes_cmd(["whatsapp"], env=env), cwd=SRC, env=env)
+        return run_hermes_command(["whatsapp"], env=env, interactive=True)
     raise SystemExit(f"Unhandled platform action: {platform_name} {action}")
 
 
@@ -821,7 +906,7 @@ def command_run(args):
         hermes_args = args.hermes_args or []
         if hermes_args and hermes_args[0].lower() == "hermes":
             hermes_args = hermes_args[1:]
-        return subprocess.call(hermes_cmd(hermes_args, env=portable_env()), cwd=SRC, env=portable_env())
+        return run_hermes_command(hermes_args, env=portable_env(), interactive=should_use_interactive_pty(hermes_args))
     finally:
         stop_process_tree(gateway)
         if cleanup_runtime:
