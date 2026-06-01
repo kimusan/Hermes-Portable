@@ -113,6 +113,14 @@ That will:
 5. start the Hermes CLI,
 6. stop the gateway child when the CLI exits.
 
+For a temporary/shared machine where you do not want to leave rebuildable runtime files behind on the host, use:
+
+```bash
+./hermes-portable --temporary
+```
+
+That removes the host-local runtime cache automatically on exit while keeping your portable state on the USB drive.
+
 ## First-run setup
 
 Run the doctor first:
@@ -390,6 +398,21 @@ WHATSAPP_ALLOWED_USERS=12345678
 
 # Pair WhatsApp interactively
 ./hermes-portable --pair-whatsapp
+# Equivalent generic platform action
+./hermes-portable --platform-action whatsapp pair
+
+# Generate or refresh the Slack app manifest in portable HERMES_HOME
+./hermes-portable --platform-action slack manifest
+
+# Update this portable wrapper repo from its git upstream
+./hermes-portable --update-wrapper
+
+# Update vendored Hermes to the latest upstream release
+./hermes-portable --update-hermes
+
+# Update vendored Hermes to a specific upstream tag or branch
+./hermes-portable --update-hermes-ref v0.15.1
+./hermes-portable --update-hermes-ref main
 
 # Run Hermes without starting the gateway child
 ./hermes-portable --no-gateway
@@ -457,6 +480,12 @@ That cache is disposable. If it breaks, remove it with:
 ```
 
 Then start again.
+
+If you want the launcher to clean that runtime cache up automatically after a session on a temporary machine, use:
+
+```bash
+./hermes-portable --temporary
+```
 
 ## Why not put everything on the USB stick?
 
@@ -536,6 +565,16 @@ Most Hermes commands still work normally when passed through the launcher:
 ```
 
 Prefer using `./hermes-portable -- ...` instead of a globally installed `hermes` command, because the launcher pins the correct `HERMES_HOME`, runtime cache, WhatsApp session path, and PATH.
+
+When a new version is available, the launcher can also update itself and the vendored Hermes source:
+
+```bash
+./hermes-portable --update-wrapper
+./hermes-portable --update-hermes
+./hermes-portable --update-hermes-ref <tag-or-branch>
+```
+
+Both update commands refuse to run on a dirty worktree and clear the host-local runtime cache afterward so the next launch rebuilds against the updated code.
 
 ## License
 

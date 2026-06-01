@@ -35,6 +35,7 @@ NODE_VERSION = "20.19.5"
 MIN_NODE_MAJOR = 18
 MIN_PYTHON = (3, 11)
 RELEASE_VERSION = "0.1.0"
+HERMES_UPSTREAM_REPO = "NousResearch/hermes-agent"
 SETUP_PLATFORMS = ("telegram", "discord", "slack", "signal", "whatsapp", "all")
 PLATFORM_ACTIONS = {
     "telegram": {"setup"},
@@ -203,6 +204,117 @@ def run(cmd, *, cwd=None, env=None, check=True, quiet=False, timeout=None):
 
 def capture(cmd, *, env=None, cwd=None):
     return subprocess.run(cmd, env=env, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _git_output(args: list[str], *, cwd: Path = ROOT) -> str:
+    cp = capture(["git", *args], cwd=cwd)
+    if cp.returncode != 0:
+        detail = cp.stderr.strip() or cp.stdout.strip() or "git command failed"
+        raise SystemExit(detail)
+    return cp.stdout.strip()
+
+
+def _git_output_optional(args: list[str], *, cwd: Path = ROOT) -> str:
+    cp = capture(["git", *args], cwd=cwd)
+    if cp.returncode != 0:
+        return ""
+    return cp.stdout.strip()
+
+
+def _require_clean_worktree(repo: Path = ROOT):
+    status = _git_output(["status", "--short"], cwd=repo)
+    if status:
+        raise SystemExit("Refusing to update with local changes present. Commit, stash, or clean the worktree first.")
+
+
+def _github_json(url: str) -> dict:
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "Hermes-Portable-Updater"})
+    with urllib.request.urlopen(req, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _download_file(url: str, target: Path):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "Hermes-Portable-Updater"})
+    with urllib.request.urlopen(req, timeout=60) as response, open(target, "wb") as handle:
+        shutil.copyfileobj(response, handle)
+
+
+def _extract_single_top_level_dir(archive: Path, destination: Path) -> Path:
+    shutil.rmtree(destination, ignore_errors=True)
+    destination.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive, "r:gz") as tar:
+        tar.extractall(destination)
+    children = [p for p in destination.iterdir() if p.is_dir()]
+    if len(children) != 1:
+        raise SystemExit(f"Expected one extracted directory in {destination}, found {len(children)}")
+    return children[0]
+
+
+def _reset_runtime_after_update(reason: str):
+    reset_runtime(reason=reason)
+    warn("Runtime cache removed. The next launch will rebuild Hermes against the updated source.")
+
+
+def update_wrapper() -> int:
+    _require_clean_worktree(ROOT)
+    branch = _git_output(["rev-parse", "--abbrev-ref", "HEAD"], cwd=ROOT)
+    upstream = _git_output_optional(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=ROOT)
+    if upstream:
+        remote, _, ref = upstream.partition("/")
+    else:
+        remote, ref = "origin", branch
+    info(f"Updating portable wrapper from {remote}/{ref}")
+    run(["git", "pull", "--ff-only", remote, ref], cwd=ROOT)
+    success("Portable wrapper update completed")
+    _reset_runtime_after_update("Resetting host-local runtime cache after wrapper update")
+    return 0
+
+
+def resolve_hermes_update_ref(requested_ref: str | None = None) -> str:
+    if requested_ref:
+        return requested_ref
+    try:
+        data = _github_json(f"https://api.github.com/repos/{HERMES_UPSTREAM_REPO}/releases/latest")
+        tag = str(data.get("tag_name", "")).strip()
+        if tag:
+            return tag
+    except Exception as exc:
+        warn(f"Could not query latest Hermes release ({exc}); falling back to upstream main")
+    return "main"
+
+
+def update_hermes(ref: str | None = None) -> int:
+    _require_clean_worktree(ROOT)
+    resolved_ref = resolve_hermes_update_ref(ref)
+    info(f"Updating vendored Hermes source to {resolved_ref}")
+    update_root = PORTABLE / "update-cache"
+    archive = update_root / "hermes-agent.tar.gz"
+    extract_root = update_root / "extract"
+    src_parent = SRC.parent
+    tag_url = f"https://codeload.github.com/{HERMES_UPSTREAM_REPO}/tar.gz/refs/tags/{resolved_ref}"
+    head_url = f"https://codeload.github.com/{HERMES_UPSTREAM_REPO}/tar.gz/refs/heads/{resolved_ref}"
+    try:
+        _download_file(tag_url, archive)
+    except Exception:
+        _download_file(head_url, archive)
+    extracted_dir = _extract_single_top_level_dir(archive, extract_root)
+    src_parent.mkdir(parents=True, exist_ok=True)
+    previous_src = src_parent / "hermes-agent.previous"
+    shutil.rmtree(previous_src, ignore_errors=True)
+    if SRC.exists():
+        SRC.rename(previous_src)
+    try:
+        shutil.move(str(extracted_dir), str(SRC))
+    except Exception:
+        if previous_src.exists() and not SRC.exists():
+            previous_src.rename(SRC)
+        raise
+    shutil.rmtree(previous_src, ignore_errors=True)
+    shutil.rmtree(update_root, ignore_errors=True)
+    success(f"Vendored Hermes source updated to {resolved_ref}")
+    _reset_runtime_after_update("Resetting host-local runtime cache after Hermes source update")
+    return 0
 
 
 def _filtered_inherited_path(env: dict[str, str]) -> str:
@@ -754,6 +866,9 @@ def main(argv=None):
     parser.add_argument("--repair", action="store_true", help="rebuild the shared portable runtime and gateway-specific host caches")
     parser.add_argument("--repair-node", action="store_true", help="redownload host-local Node runtime")
     parser.add_argument("--reset-runtime", action="store_true", help="delete host-local runtime cache and exit")
+    parser.add_argument("--update-wrapper", action="store_true", help="fast-forward this portable wrapper repo from its git upstream and reset local runtime cache")
+    parser.add_argument("--update-hermes", action="store_true", help="replace src/hermes-agent with the latest upstream Hermes release and reset local runtime cache")
+    parser.add_argument("--update-hermes-ref", help="update src/hermes-agent to a specific upstream Hermes tag or branch")
     parser.add_argument("--temporary", action="store_true", help="use temporary-machine mode and remove the host-local runtime cache on exit")
     parser.add_argument("--cleanup-runtime-on-exit", action="store_true", help="remove the host-local runtime cache on exit")
     parser.add_argument("--setup-platform", choices=SETUP_PLATFORMS, help="show portable setup notes, then run Hermes gateway setup for a messenger platform")
@@ -766,10 +881,18 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.hermes_args and args.hermes_args[0] == "--":
         args.hermes_args = args.hermes_args[1:]
+    if args.update_wrapper and (args.update_hermes or args.update_hermes_ref):
+        raise SystemExit("Run --update-wrapper and --update-hermes separately so each update can complete cleanly.")
     if args.reset_runtime:
         print_header(show_paths=False)
         reset_runtime()
         return 0
+    if args.update_wrapper:
+        print_header(show_paths=False)
+        return update_wrapper()
+    if args.update_hermes or args.update_hermes_ref:
+        print_header(show_paths=False)
+        return update_hermes(args.update_hermes_ref)
     return command_run(args)
 
 
