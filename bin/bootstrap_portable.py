@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import tomllib
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -34,6 +35,7 @@ STATE = PORTABLE / "runtime-state.json"
 NODE_VERSION = "20.19.5"
 MIN_NODE_MAJOR = 18
 MIN_PYTHON = (3, 11)
+MAX_PYTHON = (3, 14)
 RELEASE_VERSION = "0.1.0"
 HERMES_UPSTREAM_REPO = "NousResearch/hermes-agent"
 SETUP_PLATFORMS = ("telegram", "discord", "slack", "signal", "whatsapp", "all")
@@ -175,6 +177,7 @@ VENV = RUNTIME / "venv"
 NODE_HOME = RUNTIME / "node"
 WHATSAPP_RUNTIME = RUNTIME / "whatsapp-bridge"
 TMP = RUNTIME / "tmp"
+VENV_PYTHON_META = RUNTIME / "venv-python.json"
 
 
 def is_windows() -> bool:
@@ -191,6 +194,104 @@ def venv_python() -> Path:
 
 def venv_bin(name: str) -> Path:
     return VENV / (f"Scripts/{name}.exe" if is_windows() else f"bin/{name}")
+
+
+def _format_python_version(version: tuple[int, int, int] | tuple[int, int]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def _read_hermes_python_requirement() -> str:
+    pyproject = SRC / "pyproject.toml"
+    if not pyproject.exists():
+        return f">={_format_python_version(MIN_PYTHON)},<{_format_python_version(MAX_PYTHON)}"
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        value = data.get("project", {}).get("requires-python")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    except Exception:
+        pass
+    return f">={_format_python_version(MIN_PYTHON)},<{_format_python_version(MAX_PYTHON)}"
+
+
+def _parse_version_spec(spec: str) -> tuple[tuple[int, int] | None, tuple[int, int] | None]:
+    minimum = None
+    maximum = None
+    for part in spec.split(","):
+        item = part.strip()
+        if item.startswith(">="):
+            minimum = tuple(int(piece) for piece in item[2:].split(".")[:2])
+        elif item.startswith("<"):
+            maximum = tuple(int(piece) for piece in item[1:].split(".")[:2])
+    return minimum, maximum
+
+
+def _python_version_info(python: str | Path) -> tuple[int, int, int] | None:
+    cp = capture(
+        [
+            str(python),
+            "-c",
+            "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')",
+        ]
+    )
+    if cp.returncode != 0:
+        return None
+    raw = cp.stdout.strip()
+    try:
+        major, minor, patch = (int(piece) for piece in raw.split(".")[:3])
+        return major, minor, patch
+    except Exception:
+        return None
+
+
+def _python_satisfies(version: tuple[int, int, int], spec: str) -> bool:
+    minimum, maximum = _parse_version_spec(spec)
+    short = version[:2]
+    if minimum and short < minimum:
+        return False
+    if maximum and short >= maximum:
+        return False
+    return True
+
+
+def _discover_host_python(spec: str) -> tuple[str, tuple[int, int, int]]:
+    candidates: list[str] = []
+    for name in ("python3.13", "python3.12", "python3.11", "python3", "python"):
+        path = shutil.which(name)
+        if path and path not in candidates:
+            candidates.append(path)
+    current = str(Path(sys.executable).resolve())
+    if current not in candidates:
+        candidates.append(current)
+
+    checked: list[str] = []
+    for candidate in candidates:
+        version = _python_version_info(candidate)
+        if not version:
+            continue
+        checked.append(f"{candidate} ({_format_python_version(version)})")
+        if _python_satisfies(version, spec):
+            return candidate, version
+
+    detail = ", ".join(checked) if checked else "none found"
+    raise SystemExit(
+        "No compatible host Python interpreter was found for Hermes. "
+        f"Hermes requires {spec}; checked: {detail}. "
+        "Install Python 3.11, 3.12, or 3.13 and rerun."
+    )
+
+
+def _selected_venv_python(spec: str) -> tuple[str, tuple[int, int, int]]:
+    if VENV_PYTHON_META.exists():
+        try:
+            data = json.loads(VENV_PYTHON_META.read_text(encoding="utf-8"))
+            executable = str(data.get("executable", "")).strip()
+            version = _python_version_info(executable) if executable else None
+            if executable and version and _python_satisfies(version, spec):
+                return executable, version
+        except Exception:
+            pass
+    return _discover_host_python(spec)
 
 
 def run(cmd, *, cwd=None, env=None, check=True, quiet=False, timeout=None):
@@ -494,18 +595,46 @@ def ensure_dirs():
 
 
 def ensure_python_compatible():
-    if sys.version_info < MIN_PYTHON:
-        raise SystemExit(f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ is required to bootstrap Hermes; current is {platform.python_version()}.")
+    bootstrap = sys.version_info[:3]
+    if bootstrap < MIN_PYTHON:
+        raise SystemExit(
+            f"Python {_format_python_version(MIN_PYTHON)}+ is required to bootstrap Hermes; "
+            f"current is {platform.python_version()}."
+        )
 
 
 def ensure_venv(force=False):
     ensure_python_compatible()
+    requires_python = _read_hermes_python_requirement()
+    builder_python, builder_version = _selected_venv_python(requires_python)
     py = venv_python()
     if force and VENV.exists():
         shutil.rmtree(VENV, ignore_errors=True)
+    elif py.exists():
+        existing_version = _python_version_info(py)
+        if not existing_version or not _python_satisfies(existing_version, requires_python):
+            warn(
+                "Cached portable venv uses an incompatible Python "
+                f"({_format_python_version(existing_version) if existing_version else 'unknown'}); rebuilding"
+            )
+            shutil.rmtree(VENV, ignore_errors=True)
     if not py.exists():
-        info("Creating host-local Python venv")
-        run([sys.executable, "-m", "venv", str(VENV)])
+        info(
+            "Creating host-local Python venv with "
+            f"{builder_python} ({_format_python_version(builder_version)})"
+        )
+        run([builder_python, "-m", "venv", str(VENV)])
+        VENV_PYTHON_META.write_text(
+            json.dumps(
+                {
+                    "executable": builder_python,
+                    "version": _format_python_version(builder_version),
+                    "requires_python": requires_python,
+                },
+                indent=2,
+            ) + "\n",
+            encoding="utf-8",
+        )
     # Make sure pip exists. Do not run ensurepip on every launch; some
     # Python builds are noisy even when everything is already present.
     pip_check = capture([str(py), "-m", "pip", "--version"])
@@ -817,10 +946,20 @@ def doctor(env, *, show_header: bool = True):
     if show_header:
         print_header()
     print(style("Checks:", GOLD, bold=True))
+    requires_python = _read_hermes_python_requirement()
     check_value("source exists", SRC.exists(), SRC)
     check_value("data exists", DATA.exists(), DATA)
     check_value(".env exists", (DATA / '.env').exists(), DATA / '.env')
+    key_value("bootstrap python", f"{sys.executable} ({platform.python_version()})")
+    key_value("hermes python", requires_python)
     check_value("venv python", venv_python().exists(), venv_python())
+    if venv_python().exists():
+        version = _python_version_info(venv_python())
+        check_value(
+            "venv python compatible",
+            bool(version and _python_satisfies(version, requires_python)),
+            _format_python_version(version) if version else "unknown",
+        )
     filtered_path = _filtered_inherited_path(os.environ.copy())
     nb = node_bin() if node_bin().exists() else Path(shutil.which("node", path=filtered_path) or "")
     check_value("node", bool(nb), f"{nb}  major={node_major(nb) if nb else None}")
