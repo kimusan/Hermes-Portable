@@ -12,7 +12,6 @@ import argparse
 import contextlib
 import hashlib
 import json
-import select
 import os
 import platform
 import shutil
@@ -257,20 +256,6 @@ def _reset_runtime_after_update(reason: str):
     warn("Runtime cache removed. The next launch will rebuild Hermes against the updated source.")
 
 
-def _apply_pty_winsize(master_fd: int, stdin_fd: int) -> None:
-    if is_windows():
-        return
-    try:
-        import fcntl
-        import struct
-        import termios
-
-        winsize = fcntl.ioctl(stdin_fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
-        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
-    except Exception:
-        pass
-
-
 def _interactive_child_env(env: dict[str, str]) -> dict[str, str]:
     child_env = env.copy()
     # Hermes treats SSH-like PTY environments as "preserve Ctrl+Enter/newline"
@@ -292,47 +277,26 @@ def run_interactive_command(cmd: list[str], *, env: dict[str, str], cwd: Path) -
         return subprocess.call(cmd, cwd=cwd, env=env)
 
     import pty
-    import termios
-    import tty
 
-    pid, master_fd = pty.fork()
-    if pid == 0:
-        os.chdir(cwd)
-        os.execvpe(cmd[0], cmd, env)
-
-    stdin_fd = sys.stdin.fileno()
-    stdout_fd = sys.stdout.fileno()
-    old_attrs = termios.tcgetattr(stdin_fd)
+    previous_cwd = Path.cwd()
     previous_winch = signal.getsignal(signal.SIGWINCH)
+    previous_env = os.environ.copy()
 
     def _on_winch(_signum, _frame):
-        _apply_pty_winsize(master_fd, stdin_fd)
-
-    _apply_pty_winsize(master_fd, stdin_fd)
-    signal.signal(signal.SIGWINCH, _on_winch)
+        return None
 
     try:
-        tty.setraw(stdin_fd)
-        while True:
-            ready, _, _ = select.select([stdin_fd, master_fd], [], [])
-            if stdin_fd in ready:
-                data = os.read(stdin_fd, 65536)
-                if not data:
-                    break
-                os.write(master_fd, data)
-            if master_fd in ready:
-                try:
-                    data = os.read(master_fd, 65536)
-                except OSError:
-                    break
-                if not data:
-                    break
-                os.write(stdout_fd, data)
+        os.chdir(cwd)
+        os.environ.clear()
+        os.environ.update(env)
+        signal.signal(signal.SIGWINCH, _on_winch)
+        status = pty.spawn(cmd)
     finally:
-        termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_attrs)
+        os.chdir(previous_cwd)
+        os.environ.clear()
+        os.environ.update(previous_env)
         signal.signal(signal.SIGWINCH, previous_winch)
 
-    _, status = os.waitpid(pid, 0)
     if os.WIFEXITED(status):
         return os.WEXITSTATUS(status)
     if os.WIFSIGNALED(status):
@@ -342,9 +306,12 @@ def run_interactive_command(cmd: list[str], *, env: dict[str, str], cwd: Path) -
 
 def run_hermes_command(args: list[str], *, env: dict[str, str], interactive: bool = False) -> int:
     cmd = hermes_cmd(args, env=env)
-    if interactive:
-        return run_interactive_command(cmd, env=_interactive_child_env(env), cwd=SRC)
-    return subprocess.call(cmd, cwd=SRC, env=env)
+    try:
+        if interactive:
+            return run_interactive_command(cmd, env=_interactive_child_env(env), cwd=SRC)
+        return subprocess.call(cmd, cwd=SRC, env=env)
+    except KeyboardInterrupt:
+        return 130
 
 
 def should_use_interactive_pty(hermes_args: list[str]) -> bool:
@@ -352,7 +319,10 @@ def should_use_interactive_pty(hermes_args: list[str]) -> bool:
         return False
     if not hermes_args:
         return True
-    if hermes_args[0].lower() in {"chat"}:
+    first = hermes_args[0].lower()
+    if first.startswith('-'):
+        return True
+    if first in {"chat"}:
         return True
     return False
 
