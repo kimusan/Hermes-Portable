@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import tomllib
 import urllib.request
@@ -615,6 +616,12 @@ def _hermes_install_extras(*, include_dashboard: bool = False) -> tuple[str, ...
     return tuple(extras)
 
 
+def _hermes_dashboard_packages(*, include_dashboard: bool = False) -> tuple[str, ...]:
+    if not include_dashboard:
+        return ()
+    return ("python-multipart",)
+
+
 def ensure_venv(force=False, *, include_dashboard: bool = False):
     ensure_python_compatible()
     requires_python = _read_hermes_python_requirement()
@@ -622,6 +629,8 @@ def ensure_venv(force=False, *, include_dashboard: bool = False):
     py = venv_python()
     install_extras = _hermes_install_extras(include_dashboard=include_dashboard)
     install_spec = ",".join(install_extras)
+    dashboard_packages = _hermes_dashboard_packages(include_dashboard=include_dashboard)
+    package_marker = ",".join(dashboard_packages)
     if force and VENV.exists():
         shutil.rmtree(VENV, ignore_errors=True)
     elif py.exists():
@@ -656,12 +665,14 @@ def ensure_venv(force=False, *, include_dashboard: bool = False):
         run([str(py), "-m", "ensurepip", "--upgrade"], check=False, quiet=True)
     marker = RUNTIME / "hermes-install.marker"
     source_marker = hashlib.sha256(str(SRC.resolve()).encode()).hexdigest()[:16]
-    desired_marker = f"{source_marker}|extras={install_spec}|python={requires_python}"
+    desired_marker = f"{source_marker}|extras={install_spec}|packages={package_marker}|python={requires_python}"
     installed_marker = marker.read_text(encoding="utf-8") if marker.exists() else ""
     if force or not venv_bin("hermes").exists() or installed_marker != desired_marker:
         info("Installing Hermes into host-local venv from USB source")
         run([str(py), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"], env=portable_env())
         run([str(py), "-m", "pip", "install", "-e", f"{SRC}[{install_spec}]"], env=portable_env())
+        if dashboard_packages:
+            run([str(py), "-m", "pip", "install", *dashboard_packages], env=portable_env())
         marker.write_text(desired_marker, encoding="utf-8")
 
 
@@ -874,6 +885,69 @@ def _wrapper_dashboard_args(args) -> list[str]:
     if args.dashboard_insecure:
         cmd.append("--insecure")
     return cmd
+
+
+def _dashboard_launch_options(hermes_args: list[str]) -> tuple[str, int, bool]:
+    host = "127.0.0.1"
+    port = 9119
+    no_open = False
+    for index, arg in enumerate(hermes_args):
+        if arg == "--host" and index + 1 < len(hermes_args):
+            host = hermes_args[index + 1]
+        elif arg.startswith("--host="):
+            host = arg.split("=", 1)[1]
+        elif arg == "--port" and index + 1 < len(hermes_args):
+            try:
+                port = int(hermes_args[index + 1])
+            except ValueError:
+                pass
+        elif arg.startswith("--port="):
+            try:
+                port = int(arg.split("=", 1)[1])
+            except ValueError:
+                pass
+        elif arg == "--no-open":
+            no_open = True
+    return host, port, no_open
+
+
+def _system_open_command(url: str) -> list[str] | None:
+    system = platform.system().lower()
+    if system == "linux":
+        opener = shutil.which("xdg-open")
+        return [opener, url] if opener else None
+    if system == "darwin":
+        opener = shutil.which("open")
+        return [opener, url] if opener else None
+    if system == "windows":
+        comspec = os.environ.get("COMSPEC") or shutil.which("cmd.exe")
+        return [comspec, "/c", "start", "", url] if comspec else None
+    return None
+
+
+def _schedule_system_browser_open(url: str, *, delay_seconds: float = 1.0):
+    cmd = _system_open_command(url)
+    if not cmd:
+        warn(f"No system URL opener found; open {url} manually")
+        return
+
+    def _open_later():
+        time.sleep(delay_seconds)
+        try:
+            kwargs = {}
+            if is_windows():
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+            else:
+                kwargs["start_new_session"] = True
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+        except Exception as exc:
+            warn(f"Could not open dashboard URL automatically ({exc}); open {url} manually")
+
+    threading.Thread(target=_open_later, daemon=True).start()
+
+
+def _should_start_dashboard_gateway(args, dashboard_mode: str | None) -> bool:
+    return bool(dashboard_mode == "start" and not args.no_gateway and not getattr(args, "dashboard_no_gateway", False))
 
 
 def bridge_hash(src_bridge: Path) -> str:
@@ -1165,8 +1239,14 @@ def command_run(args):
         ensure_venv(force=args.repair, include_dashboard=(dashboard_mode == "start"))
         if dashboard_mode == "start" or not dashboard_mode:
             ensure_node(force=args.repair_node)
+        dashboard_starts_gateway = _should_start_dashboard_gateway(args, dashboard_mode)
         if dashboard_mode:
-            if args.prepare_platform or (platform_action and platform_action[1] == "pair"):
+            if dashboard_starts_gateway and not args.skip_gateway_prepare:
+                prepare_target = args.prepare_platform or (platform_action[0] if platform_action else "all")
+                prepare_gateway_runtime(prepare_target, force=args.repair)
+            elif dashboard_starts_gateway and (args.prepare_platform or (platform_action and platform_action[1] == "pair")):
+                warn("Skipping requested platform preparation because gateway preparation is disabled")
+            elif args.prepare_platform or (platform_action and platform_action[1] == "pair"):
                 warn("Skipping requested platform preparation because dashboard mode does not use gateway runtime preparation")
         elif not args.skip_gateway_prepare:
             prepare_target = args.prepare_platform or (platform_action[0] if platform_action else "all")
@@ -1185,8 +1265,15 @@ def command_run(args):
             if dashboard_mode == "start":
                 ensure_dashboard_assets(force=args.repair or args.repair_node)
                 hermes_env = dashboard_env()
+                if _should_start_dashboard_gateway(args, dashboard_mode):
+                    gateway = start_gateway(portable_env())
+                host, port, no_open = _dashboard_launch_options(hermes_args)
                 if "--skip-build" not in hermes_args:
                     hermes_args = [*hermes_args, "--skip-build"]
+                if "--no-open" not in hermes_args:
+                    hermes_args = [*hermes_args, "--no-open"]
+                if not no_open:
+                    _schedule_system_browser_open(f"http://{host}:{port}")
             return run_hermes_command(hermes_args, env=hermes_env, interactive=False)
         if args.gateway_only or (not args.no_gateway and not hermes_args):
             gateway = start_gateway(portable_env())
@@ -1251,6 +1338,7 @@ def main(argv=None):
     parser.add_argument("--dashboard-host", default="127.0.0.1", help="dashboard host to bind when using --dashboard (default 127.0.0.1)")
     parser.add_argument("--dashboard-port", type=int, default=9119, help="dashboard port to bind when using --dashboard (default 9119)")
     parser.add_argument("--dashboard-no-open", action="store_true", help="do not auto-open a browser when using --dashboard")
+    parser.add_argument("--dashboard-no-gateway", action="store_true", help="start the dashboard without the portable gateway child")
     parser.add_argument("--dashboard-insecure", action="store_true", help="allow non-localhost dashboard binds without auth hardening when using --dashboard")
     parser.add_argument("--setup-platform", choices=SETUP_PLATFORMS, help="show portable setup notes, then run Hermes gateway setup for a messenger platform")
     parser.add_argument("--prepare-platform", choices=SETUP_PLATFORMS, help="prepare the portable runtime for a messenger platform and exit unless another action is requested")
