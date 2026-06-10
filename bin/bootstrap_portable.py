@@ -271,6 +271,22 @@ def _apply_pty_winsize(master_fd: int, stdin_fd: int) -> None:
         pass
 
 
+def _interactive_child_env(env: dict[str, str]) -> dict[str, str]:
+    child_env = env.copy()
+    # Hermes treats SSH-like PTY environments as "preserve Ctrl+Enter/newline"
+    # terminals, leaving c-j free for newline insertion instead of submit.
+    # The wrapper's PTY bridge is a nested thin PTY with the same practical
+    # newline ambiguity, so advertise an SSH_TTY marker when one is not
+    # already present. This keeps the wrapped interactive CLI aligned with
+    # direct Hermes behavior for Ctrl+Enter/Ctrl-J newline shortcuts.
+    if not any(child_env.get(name) for name in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "WT_SESSION")):
+        try:
+            child_env["SSH_TTY"] = os.ttyname(sys.stdin.fileno())
+        except Exception:
+            child_env["SSH_TTY"] = "pty-wrapper"
+    return child_env
+
+
 def run_interactive_command(cmd: list[str], *, env: dict[str, str], cwd: Path) -> int:
     if is_windows() or not sys.stdin.isatty() or not sys.stdout.isatty():
         return subprocess.call(cmd, cwd=cwd, env=env)
@@ -327,7 +343,7 @@ def run_interactive_command(cmd: list[str], *, env: dict[str, str], cwd: Path) -
 def run_hermes_command(args: list[str], *, env: dict[str, str], interactive: bool = False) -> int:
     cmd = hermes_cmd(args, env=env)
     if interactive:
-        return run_interactive_command(cmd, env=env, cwd=SRC)
+        return run_interactive_command(cmd, env=_interactive_child_env(env), cwd=SRC)
     return subprocess.call(cmd, cwd=SRC, env=env)
 
 
@@ -906,6 +922,8 @@ def command_run(args):
         hermes_args = args.hermes_args or []
         if hermes_args and hermes_args[0].lower() == "hermes":
             hermes_args = hermes_args[1:]
+        if args.resume_session_id:
+            hermes_args = ["--resume", args.resume_session_id, *hermes_args]
         return run_hermes_command(hermes_args, env=portable_env(), interactive=should_use_interactive_pty(hermes_args))
     finally:
         stop_process_tree(gateway)
@@ -959,6 +977,7 @@ def main(argv=None):
     parser.add_argument("--setup-platform", choices=SETUP_PLATFORMS, help="show portable setup notes, then run Hermes gateway setup for a messenger platform")
     parser.add_argument("--prepare-platform", choices=SETUP_PLATFORMS, help="prepare the portable runtime for a messenger platform and exit unless another action is requested")
     parser.add_argument("--platform-action", nargs=2, metavar=("PLATFORM", "ACTION"), help="run a platform-specific portable action such as 'slack manifest' or 'whatsapp pair'")
+    parser.add_argument("--resume", dest="resume_session_id", help="resume a Hermes session by ID, like 'hermes --resume <session-id>'")
     parser.add_argument("--pair-whatsapp", action="store_true", help="prepare runtime and run Hermes WhatsApp pairing")
     parser.add_argument("--skip-gateway-prepare", dest="skip_gateway_prepare", action="store_true", help="skip gateway-specific host-cache preparation such as the WhatsApp bridge")
     parser.add_argument("--skip-whatsapp-prepare", dest="skip_gateway_prepare", action="store_true", help=argparse.SUPPRESS)
