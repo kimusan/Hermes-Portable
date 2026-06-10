@@ -37,7 +37,7 @@ NODE_VERSION = "20.19.5"
 MIN_NODE_MAJOR = 18
 MIN_PYTHON = (3, 11)
 MAX_PYTHON = (3, 14)
-RELEASE_VERSION = "0.1.0"
+RELEASE_VERSION = "0.2.0"
 HERMES_UPSTREAM_REPO = "NousResearch/hermes-agent"
 SETUP_PLATFORMS = ("telegram", "discord", "slack", "signal", "whatsapp", "all")
 PLATFORM_ACTIONS = {
@@ -150,6 +150,12 @@ def stable_usb_id() -> str:
         try:
             data = json.loads(MANIFEST.read_text(encoding="utf-8"))
             if data.get("usb_id"):
+                changed = False
+                if data.get("release_version") != RELEASE_VERSION:
+                    data["release_version"] = RELEASE_VERSION
+                    changed = True
+                if changed:
+                    MANIFEST.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
                 return str(data["usb_id"])
         except Exception:
             pass
@@ -529,6 +535,36 @@ def _read_env_file() -> dict[str, str]:
     return values
 
 
+DEPRECATED_ENV_KEYS = {
+    "TERMINAL_CWD": "Move this to config.yaml under terminal.cwd if you still need a non-default working directory."
+}
+
+
+def cleanup_deprecated_env_keys() -> list[str]:
+    env_path = DATA / ".env"
+    if not env_path.exists():
+        return []
+    lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    kept: list[str] = []
+    removed: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            kept.append(line)
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key in DEPRECATED_ENV_KEYS:
+            removed.append(key)
+            continue
+        kept.append(line)
+    if removed:
+        payload = "\n".join(kept).rstrip()
+        if payload:
+            payload += "\n"
+        env_path.write_text(payload, encoding="utf-8")
+    return removed
+
+
 def portable_env() -> dict[str, str]:
     env = os.environ.copy()
     env.update(_read_env_file())
@@ -539,7 +575,6 @@ def portable_env() -> dict[str, str]:
         "HERMES_RUNTIME_CACHE": str(RUNTIME),
         "HERMES_PORTABLE_WHATSAPP_BRIDGE_DIR": str(WHATSAPP_RUNTIME),
         "HERMES_PORTABLE_WHATSAPP_SESSION": str(DATA / "platforms" / "whatsapp" / "session"),
-        "TERMINAL_CWD": str(SRC),
         "PIP_CACHE_DIR": str(RUNTIME / "pip-cache"),
         "NPM_CONFIG_CACHE": str(RUNTIME / "npm-cache"),
         "NPM_CONFIG_INSTALL_LINKS": "true",
@@ -1220,6 +1255,7 @@ def doctor(env, *, show_header: bool = True):
 
 def command_run(args):
     ensure_dirs()
+    removed_env_keys = cleanup_deprecated_env_keys()
     env = portable_env()
     platform_action = _normalize_platform_action(args)
     cleanup_runtime = should_cleanup_runtime_on_exit(args)
@@ -1232,6 +1268,9 @@ def command_run(args):
         hermes_args = ["--resume", args.resume_session_id, *hermes_args]
     dashboard_mode = _dashboard_server_mode(hermes_args)
     print_header()
+    for key in removed_env_keys:
+        warn(f"Removed deprecated {key} entry from {DATA / '.env'}")
+        print(f"  {DEPRECATED_ENV_KEYS.get(key, '')}")
     if cleanup_runtime:
         info("Temporary-machine mode enabled; host-local runtime cache will be removed on exit")
     gateway = None

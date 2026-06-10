@@ -1,57 +1,16 @@
 # Hermes Portable
 
-```text
-╔══════════════════════════════════════════════════════════════════════╗
-║                                                                      ║
-║   ██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗              ║
-║   ██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝              ║
-║   ███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗              ║
-║   ██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║              ║
-║   ██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║              ║
-║   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝              ║
-║                                                                      ║
-║        ☤  HERMES PORTABLE  ☤   winged messenger on a stick          ║
-║                                                                      ║
-║              ┌───────────────┐                                       ║
-║          ╭───┤  /dev/hermes  ├───╮                                   ║
-║          │   └──────┬────────┘   │                                   ║
-║          │      ╭───┴───╮        │                                   ║
-║          ╰──────┤  ☤☤☤  ├────────╯                                   ║
-║                 ╰───┬───╯                                            ║
-║            USB data │ host runtime                                   ║
-║                  portable state, local speed                         ║
-║                                                                      ║
-╚══════════════════════════════════════════════════════════════════════╝
-```
+Portable wrapper for Hermes Agent that keeps durable user state on the USB drive and keeps rebuildable runtimes in a host-local cache.
 
-A portable, USB-first Hermes Agent layout by Kim Schulz <kim@schulz.dk>.
+Current release: `v0.2.0`
 
-GitHub project: https://github.com/kimusan/Hermes-Portable
+Vendored upstream Hermes: `v0.16.0`
 
-Current release: v0.1.0
+Project home: https://github.com/kimusan/Hermes-Portable
 
-This project packages Nous Research's Hermes Agent so it can travel on a USB stick while keeping the heavy, rebuildable runtimes on the host machine. The goal is simple: keep your Hermes identity, config, sessions, skills, memory, and WhatsApp pairing portable, but avoid the filesystem pain that happens when Python virtualenvs and Node `node_modules` live directly on exFAT/FAT removable media.
+## What it does
 
-## Security warning
-
-Hermes Portable stores your personal Hermes state on the USB stick. That can include AI provider API keys, gateway credentials, WhatsApp pairing/session data, chat/session history, memories, skills, config files, and other personal information.
-
-Treat the USB stick like a password manager or hardware key:
-
-- do not lend it to people you do not fully trust,
-- do not leave it plugged into shared or unattended computers,
-- keep backups in a secure place,
-- consider using full-disk or container encryption for the USB drive,
-- revoke/rotate AI API keys and re-pair WhatsApp if the stick is lost, copied, or handled by someone else.
-
-If the USB stick gets into the wrong hands, assume the data and credentials stored on it may be exposed.
-
-## What this is
-
-Hermes Portable is a practical portable wrapper around upstream Hermes Agent.
-
-It keeps durable state on the USB drive:
-
+Hermes Portable keeps these files on the USB stick:
 - `data/.env`
 - `data/config.yaml`
 - `data/state.db`
@@ -59,97 +18,115 @@ It keeps durable state on the USB drive:
 - `data/skills/`
 - `data/memories/`
 - `data/auth.json`
-- platform sessions and credentials under `data/platforms/`, including `data/platforms/whatsapp/session/`
+- `data/platforms/`, including the WhatsApp session directory
 
-It keeps rebuildable runtime pieces in a host-local cache:
-
+It keeps these rebuildable parts in a host-local cache:
 - Python virtualenv
 - pip cache
-- Python messaging SDKs for Telegram, Discord, and Slack
-- Node runtime, when needed
+- Node runtime when the host does not already provide a suitable one
 - npm cache
-- WhatsApp bridge runtime and `node_modules`
+- WhatsApp bridge runtime
+- dashboard build artifacts
 
-That split makes the install much more reliable on USB sticks and external disks, especially when the drive is formatted as exFAT.
+That split avoids the usual `venv` and `node_modules` problems on exFAT/FAT removable media while keeping your Hermes identity and state portable.
 
-## Credits and inspiration
+## Security warning
 
-Project / portable layout:
+This USB stick can contain API keys, messenger credentials, WhatsApp pairing data, chat/session history, memories, skills, and other personal material.
 
-- Kim Schulz <kim@schulz.dk>
-- Hermes Portable: https://github.com/kimusan/Hermes-Portable
-
-Built around:
-
-- Hermes Agent by Nous Research: https://github.com/NousResearch/hermes-agent
-- Hermes Agent docs: https://hermes-agent.nousresearch.com/docs/
-
-Inspired by the earlier Hermes USB Portable project/layout. The old project documents are not vendored here; see the original GitHub project instead:
-
-- https://github.com/techjarves/Hermes-USB-Portable
-
-The upstream Hermes source README is here:
-
-- `src/hermes-agent/README.md`
-
-Portable layout notes are here:
-
-- `PORTABLE.md`
+Treat it like a password vault:
+- do not leave it unattended on shared machines
+- do not lend it to people you do not fully trust
+- keep secure backups
+- use disk or container encryption if practical
+- rotate credentials if the stick is lost or copied
 
 ## Quick start
 
-From this folder:
+Linux or macOS:
 
 ```bash
 ./hermes-portable
 ```
 
-That will:
+Windows PowerShell:
 
-1. prepare/check the host-local runtime cache,
-2. install Hermes with the mainstream messaging gateway SDKs,
-3. prepare the WhatsApp bridge runtime outside the USB filesystem,
-4. start `hermes gateway run` as a child process,
-5. start the Hermes CLI,
-6. stop the gateway child when the CLI exits.
-
-For a temporary/shared machine where you do not want to leave rebuildable runtime files behind on the host, use:
-
-```bash
-./hermes-portable --temporary
+```powershell
+.\bin\hermes-portable.ps1
 ```
 
-That removes the host-local runtime cache automatically on exit while keeping your portable state on the USB drive.
+Windows `cmd.exe`:
 
-## First-run setup
+```bat
+hermes-portable.bat
+```
 
-Run the doctor first:
+Default behavior:
+1. selects a Hermes-compatible host Python automatically
+2. prepares or repairs the host-local runtime cache
+3. prepares the portable gateway runtime
+4. starts `hermes gateway run` as a child process
+5. starts the Hermes CLI
+6. stops the gateway child when Hermes exits
+
+## First-run checks
 
 ```bash
 ./hermes-portable --doctor
-```
-
-Then configure Hermes:
-
-```bash
-./hermes-portable -- hermes setup
-```
-
-Check which `.env` file Hermes is using:
-
-```bash
 ./hermes-portable -- hermes config env-path
 ```
 
-It should point inside this project:
+The reported Hermes env path should point at this portable project:
 
 ```text
 .../Hermes-USB-Portable2/data/.env
 ```
 
-## Gateway platform setup
+## Supported Python and Hermes version
 
-Hermes Portable can run several gateway adapters from the same USB state directory. Use the portable setup helper so the wizard reads and writes `data/.env` and `data/config.yaml`, not a global `~/.hermes` install:
+This release is updated for upstream Hermes `v0.16.0`.
+
+Important compatibility detail:
+- Hermes now requires Python `>=3.11,<3.14`
+- the wrapper auto-detects that requirement from `src/hermes-agent/pyproject.toml`
+- it prefers a compatible host interpreter such as `python3.13`, `python3.12`, or `python3.11`
+- if an old cached venv was built with an incompatible Python, the wrapper rebuilds it automatically
+
+## Common commands
+
+```bash
+# normal portable launch: gateway child + Hermes CLI
+./hermes-portable
+
+# resume a Hermes session by ID
+./hermes-portable --resume 20260610_170738_1de746
+
+# run doctor checks
+./hermes-portable --doctor
+
+# rebuild portable runtime pieces and then run doctor
+./hermes-portable --repair --doctor
+
+# run only the gateway under the wrapper
+./hermes-portable --gateway-only
+
+# run Hermes without starting the gateway child
+./hermes-portable --no-gateway
+
+# delete the host-local runtime cache; it will be rebuilt next run
+./hermes-portable --reset-runtime
+
+# temporary-machine mode: remove host-local runtime cache on exit
+./hermes-portable --temporary
+
+# pass commands through to Hermes directly
+./hermes-portable -- hermes status --all
+./hermes-portable -- hermes config env-path
+```
+
+## Gateway setup
+
+Portable platform setup helpers:
 
 ```bash
 ./hermes-portable --setup-platform telegram
@@ -160,427 +137,272 @@ Hermes Portable can run several gateway adapters from the same USB state directo
 ./hermes-portable --setup-platform all
 ```
 
-The helper prints platform-specific prerequisites and then starts upstream `hermes gateway setup`. The gateway setup wizard may offer to install a system service; for portable use, prefer this launcher's child-process modes instead:
+Generic platform actions:
 
 ```bash
-./hermes-portable              # gateway child + CLI
-./hermes-portable --gateway-only
+./hermes-portable --platform-action telegram setup
+./hermes-portable --platform-action discord setup
+./hermes-portable --platform-action slack setup
+./hermes-portable --platform-action slack manifest
+./hermes-portable --platform-action signal setup
+./hermes-portable --platform-action whatsapp setup
+./hermes-portable --platform-action whatsapp pair
+./hermes-portable --platform-action all setup
 ```
 
-Platform notes:
+Notes:
+- Telegram, Discord, Slack, and Signal share the portable Python gateway runtime.
+- WhatsApp still uses a separate Node bridge runtime, but the session remains on the USB stick.
+- `--pair-whatsapp` is kept as a compatibility alias for `--platform-action whatsapp pair`.
 
-- Telegram, Discord, and Slack use Python gateway SDKs installed into the host-local portable virtualenv.
-- WhatsApp uses the Node bridge runtime in the host-local cache while keeping its pairing session on the USB stick.
-- Signal uses the upstream Hermes Signal adapter, but `signal-cli` and Java are external host prerequisites; the USB stick stores only Hermes config/state.
+## Dashboard
 
-## Telegram setup
+Hermes Portable now supports the upstream Hermes dashboard.
 
-Telegram is the easiest non-WhatsApp bridge to add because it only needs a bot token and your numeric Telegram user ID.
+Wrapper commands:
 
-1. In Telegram, message `@BotFather`, run `/newbot`, and copy the bot token.
-2. Find your numeric user ID with `@userinfobot` or `@get_id_bot`. Use the number, not your `@username`.
-3. Run the portable setup helper:
+```bash
+./hermes-portable --dashboard
+./hermes-portable --dashboard --dashboard-no-open
+./hermes-portable --dashboard --dashboard-port 9120
+./hermes-portable --dashboard --dashboard-no-gateway
+./hermes-portable --dashboard-status
+./hermes-portable --dashboard-stop
+```
 
-   ```bash
-   ./hermes-portable --setup-platform telegram
-   ```
+Dashboard behavior:
+- the wrapper installs the dashboard-capable Hermes extras when needed
+- web and TUI dashboard assets are built into the host-local runtime cache, not into the USB source tree
+- `--dashboard` starts the portable gateway child by default
+- `--dashboard-no-gateway` disables that autostart if you want dashboard-only mode
+- the wrapper opens the dashboard with the system browser opener instead of relying on Python's limited browser detection
+- on Linux it prefers `xdg-open`, on macOS `open`, and on Windows `cmd /c start`
 
-4. When the wizard asks for credentials, store them in the portable Hermes environment. The equivalent manual entries in `data/.env` look like this:
+The dashboard binds to `127.0.0.1:9119` by default.
 
-   ```env
-   TELEGRAM_BOT_TOKEN=<bot-token-from-botfather>
-   TELEGRAM_ALLOWED_USERS=<numeric-telegram-user-id>
-   ```
+## Platform notes
 
-   A template is available at `examples/env/telegram.env`.
+### Telegram
 
-5. Start the gateway and send a message to your bot:
+1. Create a bot with `@BotFather` and copy the bot token.
+2. Find your numeric Telegram user ID.
+3. Run:
 
-   ```bash
-   ./hermes-portable --gateway-only
-   ```
+```bash
+./hermes-portable --setup-platform telegram
+```
 
-For group chats, disable BotFather privacy mode or promote the bot to admin if you want it to see ordinary messages. Keep `TELEGRAM_ALLOWED_USERS` tight; do not enable open access on a bot that can run tools.
+Equivalent `.env` entries:
 
-## Discord setup
+```env
+TELEGRAM_BOT_TOKEN=<bot-token>
+TELEGRAM_ALLOWED_USERS=<numeric-user-id>
+```
 
-Discord is useful for DMs, private servers, and shared team channels. The most important setup step is enabling Discord's privileged intents.
+Template: `examples/env/telegram.env`
 
-1. Go to the Discord Developer Portal and create an application with a bot user.
-2. In the bot settings, enable both **Server Members Intent** and **Message Content Intent**. Without Message Content Intent the bot can appear online but receive empty messages.
-3. Reset/copy the bot token, then invite the bot to your server with at least View Channels, Send Messages, Read Message History, Attach Files, and Embed Links permissions.
-4. Enable Developer Mode in Discord and copy your numeric Discord User ID.
-5. Run the portable setup helper:
+### Discord
 
-   ```bash
-   ./hermes-portable --setup-platform discord
-   ```
+1. Create a Discord bot application.
+2. Enable `Server Members Intent` and `Message Content Intent`.
+3. Copy the bot token and your numeric Discord user ID.
+4. Run:
 
-6. The equivalent manual entries in `data/.env` look like this:
+```bash
+./hermes-portable --setup-platform discord
+```
 
-   ```env
-   DISCORD_BOT_TOKEN=<discord-bot-token>
-   DISCORD_ALLOWED_USERS=<discord-user-id>
-   ```
+Equivalent `.env` entries:
 
-   A template is available at `examples/env/discord.env`.
+```env
+DISCORD_BOT_TOKEN=<discord-bot-token>
+DISCORD_ALLOWED_USERS=<discord-user-id>
+```
 
-7. Start the gateway and test a DM or mention the bot in a server channel:
+Template: `examples/env/discord.env`
 
-   ```bash
-   ./hermes-portable --gateway-only
-   ```
+### Slack
 
-By default Hermes responds to every DM, but in server channels it expects an `@mention` unless you configure free-response channels.
+1. Generate the portable Slack manifest:
 
-## Slack setup
+```bash
+./hermes-portable --platform-action slack manifest
+```
 
-Slack uses Socket Mode, so Hermes Portable does not need a public webhook URL. You need two different Slack tokens, and they come from different places:
+2. Create/install the Slack app from that manifest.
+3. Copy:
+- `SLACK_BOT_TOKEN` from `OAuth & Permissions`; it must start with `xoxb-`
+- `SLACK_APP_TOKEN` from `Basic Information -> App-Level Tokens`; it must start with `xapp-`
+4. Set `SLACK_ALLOWED_USERS` unless you intentionally enable open access.
+5. Run:
 
-- `SLACK_BOT_TOKEN`: the Bot User OAuth Token. It starts with `xoxb-`.
-- `SLACK_APP_TOKEN`: the app-level Socket Mode token. It starts with `xapp-`.
+```bash
+./hermes-portable --setup-platform slack
+```
 
-Do not use the Slack Verification Token or Signing Secret as `SLACK_BOT_TOKEN`; those are different values and Slack will return `invalid_auth`.
+Equivalent `.env` entries:
 
-1. Generate the upstream Hermes Slack app manifest from the portable environment:
+```env
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_ALLOWED_USERS=U0123456789
+```
 
-   ```bash
-   ./hermes-portable -- hermes slack manifest --write
-   ```
+Template: `examples/env/slack.env`
 
-   The file is written under the portable Hermes home, not your global home directory.
+### Signal
 
-2. In Slack, go to `api.slack.com/apps`, create an app from an app manifest, paste the generated manifest, and install it to your workspace.
-3. Copy the bot token:
-   - Open your app in `api.slack.com/apps`.
-   - Go to `OAuth & Permissions`.
-   - Copy `Bot User OAuth Token`.
-   - It must start with `xoxb-`.
-4. Copy the app-level Socket Mode token:
-   - Go to `Basic Information` -> `App-Level Tokens`.
-   - Create/copy a token with `connections:write`.
-   - It must start with `xapp-`.
-5. Find your Slack Member ID from your profile menu (`View full profile` -> more menu -> `Copy member ID`). It usually starts with `U` or `W`.
-6. Run the portable setup helper:
+Signal support requires host-installed Java and `signal-cli`.
 
-   ```bash
-   ./hermes-portable --setup-platform slack
-   ```
+1. Install Java 17+ and `signal-cli` on the host.
+2. Link `signal-cli` as a secondary Signal device.
+3. Start the daemon:
 
-7. The equivalent manual entries in `data/.env` look like this:
+```bash
+signal-cli --account +1234567890 daemon --http 127.0.0.1:8080
+```
 
-   ```env
-   SLACK_BOT_TOKEN=xoxb-...
-   SLACK_APP_TOKEN=xapp-...
-   SLACK_ALLOWED_USERS=U0123456789
-   ```
+4. Run:
 
-   `SLACK_ALLOWED_USERS` is required for normal private access. If it is empty, Hermes will deny Slack users even though the Slack app is connected. Only skip it if you intentionally set `SLACK_ALLOW_ALL_USERS=true` or `GATEWAY_ALLOW_ALL_USERS=true`.
+```bash
+./hermes-portable --setup-platform signal
+```
 
-   A template is available at `examples/env/slack.env`.
+Equivalent `.env` entries:
 
-8. Check the portable configuration:
+```env
+SIGNAL_HTTP_URL=http://127.0.0.1:8080
+SIGNAL_ACCOUNT=<your-e164-number>
+SIGNAL_ALLOWED_USERS=<allowed-user>
+```
 
-   ```bash
-   ./hermes-portable --doctor
-   ```
+Template: `examples/env/signal.env`
 
-   The Slack checks should show a valid `xoxb-` bot token, a valid `xapp-` app token, and configured allowed users/open access.
+### WhatsApp
 
-9. Start the gateway, invite the bot to any channel where it should respond, and test a DM or app mention:
+Pair from the portable environment:
 
-   ```bash
-   ./hermes-portable --gateway-only
-   ```
+```bash
+./hermes-portable --platform-action whatsapp pair
+```
 
-If Slack works in DMs but not channels, check that the app has `message.channels` / `message.groups` event subscriptions and that the bot has been invited to the channel.
-
-## Signal setup
-
-Signal support uses the upstream Hermes Signal adapter plus a host-installed `signal-cli` daemon. Hermes Portable stores the Hermes config on the USB stick, but it does not bundle Java or signal-cli.
-
-1. Install Java 17+ and `signal-cli` on the host machine.
-2. Link signal-cli as a secondary device:
-
-   ```bash
-   signal-cli link -n "HermesPortable"
-   ```
-
-   Then open Signal on your phone and use `Settings -> Linked Devices -> Link New Device`.
-
-3. Start the Signal HTTP daemon on the host, replacing the account with your E.164 phone number:
-
-   ```bash
-   signal-cli --account +1234567890 daemon --http 127.0.0.1:8080
-   ```
-
-4. Run the portable setup helper:
-
-   ```bash
-   ./hermes-portable --setup-platform signal
-   ```
-
-5. The equivalent manual entries in `data/.env` look like this:
-
-   ```env
-   SIGNAL_HTTP_URL=http://127.0.0.1:8080
-   SIGNAL_ACCOUNT=<your-e164-signal-number>
-   SIGNAL_ALLOWED_USERS=<allowed-e164-number-or-signal-uuid>
-   ```
-
-   A template is available at `examples/env/signal.env`.
-
-6. Check that the portable launcher can see signal-cli and the daemon:
-
-   ```bash
-   ./hermes-portable --doctor
-   ```
-
-7. Start the gateway and test Signal. For a single-number setup, send a message to Signal's "Note to Self" conversation from your phone:
-
-   ```bash
-   ./hermes-portable --gateway-only
-   ```
-
-If `--doctor` says the Signal daemon is not reachable, start the `signal-cli ... daemon --http ...` command first and make sure `SIGNAL_HTTP_URL` points to the same host/port.
-
-## WhatsApp setup
-
-Pair WhatsApp from the same portable environment:
+Compatibility alias:
 
 ```bash
 ./hermes-portable --pair-whatsapp
 ```
 
-Then scan the QR code from WhatsApp:
-
-```text
-WhatsApp -> Settings -> Linked Devices -> Link a Device
-```
-
-For Danish phone numbers in `WHATSAPP_ALLOWED_USERS`, use E.164 digits without `+` and without `00`:
-
-```env
-WHATSAPP_ALLOWED_USERS=45xxxxxxxx
-```
-
-For example, do this:
+For Danish numbers in `WHATSAPP_ALLOWED_USERS`, use E.164 digits without `+` or `00`:
 
 ```env
 WHATSAPP_ALLOWED_USERS=4512345678
 ```
 
-Do not use:
+## Update commands
 
-```env
-WHATSAPP_ALLOWED_USERS=004512345678
-WHATSAPP_ALLOWED_USERS=+4512345678
-WHATSAPP_ALLOWED_USERS=12345678
-```
-
-## Common commands
+Update the wrapper repo itself:
 
 ```bash
-# Normal portable launch: gateway child + Hermes CLI
-./hermes-portable
-
-# Diagnose paths, runtime, Node, npm, WhatsApp session
-./hermes-portable --doctor
-
-# Rebuild the host-local Python/Node/WhatsApp runtime where needed
-./hermes-portable --repair --doctor
-
-# Configure a messenger platform with portable HERMES_HOME
-./hermes-portable --setup-platform telegram
-./hermes-portable --setup-platform discord
-./hermes-portable --setup-platform slack
-./hermes-portable --setup-platform signal
-
-# Pair WhatsApp interactively
-./hermes-portable --pair-whatsapp
-# Equivalent generic platform action
-./hermes-portable --platform-action whatsapp pair
-
-# Generate or refresh the Slack app manifest in portable HERMES_HOME
-./hermes-portable --platform-action slack manifest
-
-# Update this portable wrapper repo from its git upstream
 ./hermes-portable --update-wrapper
+```
 
-# Update vendored Hermes to the latest upstream release
+Update the vendored Hermes source to the latest upstream release:
+
+```bash
 ./hermes-portable --update-hermes
+```
 
-# Update vendored Hermes to a specific upstream tag or branch
-./hermes-portable --update-hermes-ref v0.15.1
+Update the vendored Hermes source to a specific upstream tag or branch:
+
+```bash
+./hermes-portable --update-hermes-ref v0.16.0
 ./hermes-portable --update-hermes-ref main
-
-# Run Hermes without starting the gateway child
-./hermes-portable --no-gateway
-
-# Run only the gateway under the portable launcher
-./hermes-portable --gateway-only
-
-# Delete the host-local runtime cache; it will be rebuilt next run
-./hermes-portable --reset-runtime
-
-# Pass a command through to Hermes
-./hermes-portable -- hermes status --all
-./hermes-portable -- hermes config path
-./hermes-portable -- hermes config env-path
 ```
 
-## Startup styling
+Update behavior:
+- both update paths require a clean git worktree
+- both reset the host-local runtime cache after the source update
+- the next launch rebuilds against the updated code
 
-Hermes Portable shows a compact ANSI/ASCII startup banner inspired by the upstream Hermes CLI. It follows normal terminal color conventions:
+## Temporary-machine mode
 
-```bash
-# Force color even when stdout is redirected
-HERMES_PORTABLE_COLOR=always ./hermes-portable --doctor
-
-# Disable ANSI colors but keep the text logo
-NO_COLOR=1 ./hermes-portable --doctor
-
-# Disable the logo entirely for very plain logs/scripts
-HERMES_PORTABLE_NO_LOGO=1 ./hermes-portable --doctor
-```
-
-## Directory map
-
-```text
-Hermes-USB-Portable2/
-├── hermes-portable              # POSIX launcher
-├── hermes-portable.bat          # Windows cmd launcher
-├── README.md                    # this file
-├── PORTABLE.md                  # implementation notes for this layout
-├── bin/
-│   ├── bootstrap_portable.py    # portable runtime/bootstrap brain
-│   ├── hermes-portable.sh       # Linux/macOS shell launcher
-│   ├── hermes-portable.command  # macOS double-click helper
-│   └── hermes-portable.ps1      # PowerShell launcher
-├── data/                        # portable Hermes state; back this up
-│   ├── .env                     # secrets and platform flags
-│   ├── config.yaml              # Hermes config
-│   ├── state.db                 # session database
-│   ├── logs/                    # agent/gateway logs
-│   └── platforms/               # portable messenger state, such as WhatsApp sessions
-├── portable/                    # generated runtime metadata, ignored by git
-└── src/hermes-agent/            # upstream Hermes source checkout
-```
-
-Host-local runtime cache on this machine currently uses a path like:
-
-```text
-~/.cache/hermes-portable/<portable-usb-id>/
-```
-
-That cache is disposable. If it breaks, remove it with:
-
-```bash
-./hermes-portable --reset-runtime
-```
-
-Then start again.
-
-If you want the launcher to clean that runtime cache up automatically after a session on a temporary machine, use:
+If you want to use Hermes Portable on a borrowed or temporary machine and remove locally installed runtime files afterward:
 
 ```bash
 ./hermes-portable --temporary
 ```
 
-## Why not put everything on the USB stick?
-
-Because many removable drives are formatted as exFAT/FAT/NTFS. Those filesystems often lack the Unix filesystem features expected by development runtimes:
-
-- symlinks,
-- executable bits,
-- reliable permissions,
-- sockets,
-- ownership metadata,
-- npm-style `node_modules/.bin` links.
-
-The WhatsApp bridge is Node-based and depends on packages that may create links or expect Unix-like metadata. Keeping the bridge runtime in a host-local cache avoids those errors while preserving the WhatsApp session on the USB stick.
-
-## Troubleshooting
-
-### Gateway starts but WhatsApp messages are ignored
-
-Check the logs:
+Equivalent explicit flag:
 
 ```bash
-./hermes-portable --gateway-only
+./hermes-portable --cleanup-runtime-on-exit
 ```
 
-or inspect:
+This removes the host-local runtime cache on exit, including:
+- portable Python venv
+- downloaded Node runtime
+- pip and npm caches
+- dashboard build cache
+- WhatsApp bridge runtime
+
+It does not remove:
+- data on the USB stick under `data/`
+- host tools reused from the system `PATH`
+
+## Startup banner and colors
+
+```bash
+# force color
+HERMES_PORTABLE_COLOR=always ./hermes-portable --doctor
+
+# disable ANSI colors
+NO_COLOR=1 ./hermes-portable --doctor
+
+# disable the ASCII logo
+HERMES_PORTABLE_NO_LOGO=1 ./hermes-portable --doctor
+```
+
+The wrapper now shows the `Hermes Portable` ASCII banner for normal launches, `--help`, and other wrapper-level commands.
+
+## Notes on recent compatibility changes
+
+Recent wrapper changes worth knowing about:
+- interactive sessions now run through a PTY-backed wrapper path so list navigation and direct Hermes terminal behavior are preserved more closely
+- `--resume` is supported directly by the wrapper
+- deprecated `TERMINAL_CWD` entries in `data/.env` are removed automatically; use `config.yaml` `terminal.cwd` instead if you still need a custom working directory
+- the dashboard path now includes the extra dependency needed for the Kanban plugin API to mount correctly
+
+## Directory layout
 
 ```text
-data/logs/gateway.log
-data/platforms/whatsapp/bridge.log
+Hermes-USB-Portable2/
+├── hermes-portable
+├── hermes-portable.bat
+├── README.md
+├── PORTABLE.md
+├── bin/
+│   ├── bootstrap_portable.py
+│   ├── hermes-portable.command
+│   ├── hermes-portable.ps1
+│   └── hermes-portable.sh
+├── data/
+│   ├── .env
+│   ├── config.yaml
+│   ├── logs/
+│   ├── platforms/
+│   └── state.db
+├── portable/
+└── src/hermes-agent/
 ```
 
-Useful things to look for:
+The host-local cache typically lives at:
 
 ```text
-Unauthorized user
-self_chat_mode_rejects_non_self
-allowlist_mismatch
-WhatsApp connected
+~/.cache/hermes-portable/<portable-usb-id>/
 ```
 
-For self-chat mode, make sure:
+That cache is disposable.
 
-```env
-WHATSAPP_ENABLED=true
-WHATSAPP_MODE=self-chat
-WHATSAPP_ALLOWED_USERS=45xxxxxxxx
-```
+## More implementation detail
 
-Then restart the portable launcher.
-
-### Runtime is confused or stale
-
-```bash
-./hermes-portable --reset-runtime
-./hermes-portable --repair --doctor
-```
-
-### Need a clean state
-
-Move or remove `data/` if you want to start completely fresh. Keep a backup first if it contains API keys, sessions, skills, or WhatsApp pairing data.
-
-## Relationship to upstream Hermes
-
-This repository/folder is a portable wrapper and state layout. The actual Hermes Agent source lives under:
-
-```text
-src/hermes-agent/
-```
-
-Most Hermes commands still work normally when passed through the launcher:
-
-```bash
-./hermes-portable -- hermes doctor
-./hermes-portable -- hermes model
-./hermes-portable -- hermes tools list
-./hermes-portable -- hermes gateway run
-```
-
-Prefer using `./hermes-portable -- ...` instead of a globally installed `hermes` command, because the launcher pins the correct `HERMES_HOME`, runtime cache, WhatsApp session path, and PATH.
-
-When a new version is available, the launcher can also update itself and the vendored Hermes source:
-
-```bash
-./hermes-portable --update-wrapper
-./hermes-portable --update-hermes
-./hermes-portable --update-hermes-ref <tag-or-branch>
-```
-
-Both update commands refuse to run on a dirty worktree and clear the host-local runtime cache afterward so the next launch rebuilds against the updated code.
-
-## License
-
-This portable wrapper/layout is created byKim Schulz <kim@schulz.dk> and released under the MIT License. See `LICENSE` in this repository.
-
-Hermes Agent itself is developed by Nous Research and is licensed under its upstream license. See:
-
-- `src/hermes-agent/LICENSE`
-- https://github.com/NousResearch/hermes-agent
+See `PORTABLE.md` for the wrapper layout and runtime design notes.
