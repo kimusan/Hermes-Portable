@@ -178,6 +178,11 @@ NODE_HOME = RUNTIME / "node"
 WHATSAPP_RUNTIME = RUNTIME / "whatsapp-bridge"
 TMP = RUNTIME / "tmp"
 VENV_PYTHON_META = RUNTIME / "venv-python.json"
+DASHBOARD_SOURCE_ROOT = RUNTIME / "dashboard-source"
+DASHBOARD_BUILD_MARKER = RUNTIME / "dashboard-build.marker"
+DASHBOARD_WEB_DIST = DASHBOARD_SOURCE_ROOT / "hermes_cli" / "web_dist"
+DASHBOARD_TUI_DIR = DASHBOARD_SOURCE_ROOT / "ui-tui"
+DASHBOARD_TUI_ENTRY = DASHBOARD_TUI_DIR / "dist" / "entry.js"
 
 
 def is_windows() -> bool:
@@ -603,11 +608,20 @@ def ensure_python_compatible():
         )
 
 
-def ensure_venv(force=False):
+def _hermes_install_extras(*, include_dashboard: bool = False) -> tuple[str, ...]:
+    extras = ["messaging"]
+    if include_dashboard:
+        extras.extend(["web", "pty"])
+    return tuple(extras)
+
+
+def ensure_venv(force=False, *, include_dashboard: bool = False):
     ensure_python_compatible()
     requires_python = _read_hermes_python_requirement()
     builder_python, builder_version = _selected_venv_python(requires_python)
     py = venv_python()
+    install_extras = _hermes_install_extras(include_dashboard=include_dashboard)
+    install_spec = ",".join(install_extras)
     if force and VENV.exists():
         shutil.rmtree(VENV, ignore_errors=True)
     elif py.exists():
@@ -642,15 +656,13 @@ def ensure_venv(force=False):
         run([str(py), "-m", "ensurepip", "--upgrade"], check=False, quiet=True)
     marker = RUNTIME / "hermes-install.marker"
     source_marker = hashlib.sha256(str(SRC.resolve()).encode()).hexdigest()[:16]
+    desired_marker = f"{source_marker}|extras={install_spec}|python={requires_python}"
     installed_marker = marker.read_text(encoding="utf-8") if marker.exists() else ""
-    if force or not venv_bin("hermes").exists() or installed_marker != source_marker:
+    if force or not venv_bin("hermes").exists() or installed_marker != desired_marker:
         info("Installing Hermes into host-local venv from USB source")
         run([str(py), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"], env=portable_env())
-        # Install Hermes plus the mainstream gateway SDKs. Signal does not
-        # need an extra Python package, but its adapter is included in Hermes
-        # and talks to an external signal-cli HTTP daemon when configured.
-        run([str(py), "-m", "pip", "install", "-e", f"{SRC}[messaging]"], env=portable_env())
-        marker.write_text(source_marker, encoding="utf-8")
+        run([str(py), "-m", "pip", "install", "-e", f"{SRC}[{install_spec}]"], env=portable_env())
+        marker.write_text(desired_marker, encoding="utf-8")
 
 
 def node_bin() -> Path:
@@ -729,6 +741,139 @@ def ensure_node(force=False):
         shutil.rmtree(NODE_HOME, ignore_errors=True)
     shutil.move(str(children[0]), str(NODE_HOME))
     shutil.rmtree(tmp_extract, ignore_errors=True)
+
+
+def _effective_node_binary(env: dict[str, str] | None = None) -> str:
+    if node_bin().exists() and (node_major(node_bin()) or 0) >= MIN_NODE_MAJOR:
+        return str(node_bin())
+    path = (env or portable_env()).get("PATH", "")
+    return shutil.which("node", path=path) or "node"
+
+
+def _effective_npm_binary(env: dict[str, str] | None = None) -> str:
+    if npm_bin().exists():
+        return str(npm_bin())
+    path = (env or portable_env()).get("PATH", "")
+    return shutil.which("npm", path=path) or "npm"
+
+
+def _dashboard_build_env() -> dict[str, str]:
+    env = portable_env()
+    env["HERMES_NODE"] = _effective_node_binary(env)
+    return env
+
+
+def dashboard_env() -> dict[str, str]:
+    env = _dashboard_build_env()
+    env["HERMES_WEB_DIST"] = str(DASHBOARD_WEB_DIST)
+    env["HERMES_TUI_DIR"] = str(DASHBOARD_TUI_DIR)
+    return env
+
+
+def _dashboard_source_hash() -> str:
+    excluded = {".git", "node_modules", "__pycache__", "web_dist", "tui_dist", "dist", "release", ".pytest_cache", ".ruff_cache"}
+    h = hashlib.sha256()
+    for file_path in sorted(SRC.rglob("*")):
+        if not file_path.is_file():
+            continue
+        rel = file_path.relative_to(SRC)
+        if any(part in excluded for part in rel.parts):
+            continue
+        if file_path.suffix in {".pyc", ".pyo"}:
+            continue
+        h.update(rel.as_posix().encode("utf-8", "ignore"))
+        h.update(file_path.read_bytes())
+    node_version = capture([_effective_node_binary(_dashboard_build_env()), "--version"], env=_dashboard_build_env())
+    h.update(node_version.stdout.encode("utf-8", "ignore"))
+    return h.hexdigest()
+
+
+def ensure_dashboard_assets(*, force: bool = False):
+    desired = _dashboard_source_hash()
+    current = DASHBOARD_BUILD_MARKER.read_text(encoding="utf-8") if DASHBOARD_BUILD_MARKER.exists() else ""
+    if force:
+        shutil.rmtree(DASHBOARD_SOURCE_ROOT, ignore_errors=True)
+    if (
+        not force
+        and current == desired
+        and (DASHBOARD_WEB_DIST / "index.html").exists()
+        and DASHBOARD_TUI_ENTRY.exists()
+    ):
+        success("Portable dashboard assets are current")
+        return
+
+    info("Preparing dashboard source/build cache in host-local runtime")
+    shutil.rmtree(DASHBOARD_SOURCE_ROOT, ignore_errors=True)
+    shutil.copytree(
+        SRC,
+        DASHBOARD_SOURCE_ROOT,
+        ignore=shutil.ignore_patterns(
+            ".git", "node_modules", "__pycache__", "*.pyc", "*.pyo",
+            "web_dist", "tui_dist", ".pytest_cache", ".ruff_cache",
+            "release"
+        ),
+    )
+    env = _dashboard_build_env()
+    npm = _effective_npm_binary(env)
+    run(
+        [
+            npm,
+            "install",
+            "--no-fund",
+            "--no-audit",
+            "--progress=false",
+            "--workspace",
+            "web",
+            "--workspace",
+            "ui-tui",
+            "--workspace",
+            "ui-tui/packages/hermes-ink",
+            "--include-workspace-root=false",
+        ],
+        cwd=DASHBOARD_SOURCE_ROOT,
+        env=env,
+        timeout=1800,
+    )
+    run([npm, "run", "build", "--workspace", "ui-tui"], cwd=DASHBOARD_SOURCE_ROOT, env=env, timeout=1800)
+    run([npm, "run", "build", "--workspace", "web"], cwd=DASHBOARD_SOURCE_ROOT, env=env, timeout=1800)
+    if not (DASHBOARD_WEB_DIST / "index.html").exists():
+        raise SystemExit(f"Dashboard web build did not produce {DASHBOARD_WEB_DIST / 'index.html'}")
+    if not DASHBOARD_TUI_ENTRY.exists():
+        raise SystemExit(f"Dashboard TUI build did not produce {DASHBOARD_TUI_ENTRY}")
+    DASHBOARD_BUILD_MARKER.write_text(desired, encoding="utf-8")
+    success("Portable dashboard assets are current")
+
+
+def _dashboard_server_mode(hermes_args: list[str]) -> str | None:
+    if not hermes_args or hermes_args[0].lower() != "dashboard":
+        return None
+    if len(hermes_args) > 1 and not hermes_args[1].startswith("-"):
+        return None
+    if "--status" in hermes_args:
+        return "status"
+    if "--stop" in hermes_args:
+        return "stop"
+    return "start"
+
+
+def _wrapper_dashboard_requested(args) -> bool:
+    return bool(getattr(args, "dashboard", False) or getattr(args, "dashboard_stop", False) or getattr(args, "dashboard_status", False))
+
+
+def _wrapper_dashboard_args(args) -> list[str]:
+    cmd = ["dashboard"]
+    if args.dashboard_status:
+        cmd.append("--status")
+        return cmd
+    if args.dashboard_stop:
+        cmd.append("--stop")
+        return cmd
+    cmd.extend(["--host", args.dashboard_host, "--port", str(args.dashboard_port)])
+    if args.dashboard_no_open:
+        cmd.append("--no-open")
+    if args.dashboard_insecure:
+        cmd.append("--insecure")
+    return cmd
 
 
 def bridge_hash(src_bridge: Path) -> str:
@@ -960,6 +1105,8 @@ def doctor(env, *, show_header: bool = True):
             bool(version and _python_satisfies(version, requires_python)),
             _format_python_version(version) if version else "unknown",
         )
+    check_value("dashboard web dist", (DASHBOARD_WEB_DIST / 'index.html').exists(), DASHBOARD_WEB_DIST / 'index.html')
+    check_value("dashboard tui dist", DASHBOARD_TUI_ENTRY.exists(), DASHBOARD_TUI_ENTRY)
     filtered_path = _filtered_inherited_path(os.environ.copy())
     nb = node_bin() if node_bin().exists() else Path(shutil.which("node", path=filtered_path) or "")
     check_value("node", bool(nb), f"{nb}  major={node_major(nb) if nb else None}")
@@ -1002,37 +1149,52 @@ def command_run(args):
     env = portable_env()
     platform_action = _normalize_platform_action(args)
     cleanup_runtime = should_cleanup_runtime_on_exit(args)
+    hermes_args = args.hermes_args or []
+    if hermes_args and hermes_args[0].lower() == "hermes":
+        hermes_args = hermes_args[1:]
+    if _wrapper_dashboard_requested(args):
+        hermes_args = _wrapper_dashboard_args(args)
+    if args.resume_session_id:
+        hermes_args = ["--resume", args.resume_session_id, *hermes_args]
+    dashboard_mode = _dashboard_server_mode(hermes_args)
     print_header()
     if cleanup_runtime:
         info("Temporary-machine mode enabled; host-local runtime cache will be removed on exit")
     gateway = None
     try:
-        ensure_venv(force=args.repair)
-        ensure_node(force=args.repair_node)
-        if not args.skip_gateway_prepare:
+        ensure_venv(force=args.repair, include_dashboard=(dashboard_mode == "start"))
+        if dashboard_mode == "start" or not dashboard_mode:
+            ensure_node(force=args.repair_node)
+        if dashboard_mode:
+            if args.prepare_platform or (platform_action and platform_action[1] == "pair"):
+                warn("Skipping requested platform preparation because dashboard mode does not use gateway runtime preparation")
+        elif not args.skip_gateway_prepare:
             prepare_target = args.prepare_platform or (platform_action[0] if platform_action else "all")
             prepare_gateway_runtime(prepare_target, force=args.repair)
         elif args.prepare_platform or (platform_action and platform_action[1] == "pair"):
             warn("Skipping requested platform preparation because gateway preparation is disabled")
-        if args.prepare_platform and not (platform_action or args.doctor or args.gateway_only or args.hermes_args):
+        if args.prepare_platform and not (platform_action or args.doctor or args.gateway_only or hermes_args):
             return 0
         if args.doctor:
             doctor(portable_env(), show_header=False)
             return 0
         if platform_action:
             return run_platform_action(*platform_action)
-        if args.gateway_only or (not args.no_gateway and not args.hermes_args):
+        if dashboard_mode:
+            hermes_env = portable_env()
+            if dashboard_mode == "start":
+                ensure_dashboard_assets(force=args.repair or args.repair_node)
+                hermes_env = dashboard_env()
+                if "--skip-build" not in hermes_args:
+                    hermes_args = [*hermes_args, "--skip-build"]
+            return run_hermes_command(hermes_args, env=hermes_env, interactive=False)
+        if args.gateway_only or (not args.no_gateway and not hermes_args):
             gateway = start_gateway(portable_env())
             if args.gateway_only:
                 print("Gateway-only mode. Press Ctrl+C to stop.")
                 while gateway.poll() is None:
                     time.sleep(1)
                 return gateway.returncode or 0
-        hermes_args = args.hermes_args or []
-        if hermes_args and hermes_args[0].lower() == "hermes":
-            hermes_args = hermes_args[1:]
-        if args.resume_session_id:
-            hermes_args = ["--resume", args.resume_session_id, *hermes_args]
         return run_hermes_command(hermes_args, env=portable_env(), interactive=should_use_interactive_pty(hermes_args))
     finally:
         stop_process_tree(gateway)
@@ -1083,6 +1245,13 @@ def main(argv=None):
     parser.add_argument("--update-hermes-ref", help="update src/hermes-agent to a specific upstream Hermes tag or branch")
     parser.add_argument("--temporary", action="store_true", help="use temporary-machine mode and remove the host-local runtime cache on exit")
     parser.add_argument("--cleanup-runtime-on-exit", action="store_true", help="remove the host-local runtime cache on exit")
+    parser.add_argument("--dashboard", action="store_true", help="start Hermes dashboard with host-cached portable web/TUI assets")
+    parser.add_argument("--dashboard-stop", action="store_true", help="stop running Hermes dashboard processes")
+    parser.add_argument("--dashboard-status", action="store_true", help="list running Hermes dashboard processes")
+    parser.add_argument("--dashboard-host", default="127.0.0.1", help="dashboard host to bind when using --dashboard (default 127.0.0.1)")
+    parser.add_argument("--dashboard-port", type=int, default=9119, help="dashboard port to bind when using --dashboard (default 9119)")
+    parser.add_argument("--dashboard-no-open", action="store_true", help="do not auto-open a browser when using --dashboard")
+    parser.add_argument("--dashboard-insecure", action="store_true", help="allow non-localhost dashboard binds without auth hardening when using --dashboard")
     parser.add_argument("--setup-platform", choices=SETUP_PLATFORMS, help="show portable setup notes, then run Hermes gateway setup for a messenger platform")
     parser.add_argument("--prepare-platform", choices=SETUP_PLATFORMS, help="prepare the portable runtime for a messenger platform and exit unless another action is requested")
     parser.add_argument("--platform-action", nargs=2, metavar=("PLATFORM", "ACTION"), help="run a platform-specific portable action such as 'slack manifest' or 'whatsapp pair'")
@@ -1096,6 +1265,9 @@ def main(argv=None):
         args.hermes_args = args.hermes_args[1:]
     if args.update_wrapper and (args.update_hermes or args.update_hermes_ref):
         raise SystemExit("Run --update-wrapper and --update-hermes separately so each update can complete cleanly.")
+    dashboard_ops = sum(bool(value) for value in (args.dashboard, args.dashboard_stop, args.dashboard_status))
+    if dashboard_ops > 1:
+        raise SystemExit("Choose only one of --dashboard, --dashboard-stop, or --dashboard-status.")
     if args.reset_runtime:
         print_header(show_paths=False)
         reset_runtime()
