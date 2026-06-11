@@ -1,5 +1,7 @@
 # Hermes Portable
 
+![Hermes Portable logo](https://raw.githubusercontent.com/kimusan/Hermes-Portable/main/assets/hermes-portable-logo-orange.png)
+
 Portable wrapper for Hermes Agent that keeps durable user state on the USB drive and keeps rebuildable runtimes in a host-local cache.
 
 Current release: `v0.2.0`
